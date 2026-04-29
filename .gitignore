@@ -1,0 +1,30 @@
+# Claude Code / AI tooling internals
+.agents/
+.claude/
+.claude-plugin/
+.codex-plugin/
+.codex/
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Runtime data
+data/
+
+# Environment
+.env
+.env.local
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

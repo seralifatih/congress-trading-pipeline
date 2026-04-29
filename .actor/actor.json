@@ -1,0 +1,41 @@
+{
+  "actorSpecification": 1,
+  "name": "congress-trading-pipeline",
+  "title": "Congress Trading Pipeline",
+  "description": "Fetches U.S. Senate PTR disclosures, normalizes them, and pushes to Apify Dataset.",
+  "version": "0.1",
+  "buildTag": "latest",
+  "dockerfile": "../Dockerfile",
+  "dockerContextDir": "..",
+  "input": {
+    "schemaVersion": 1,
+    "title": "Congress Trading Pipeline Input",
+    "description": "Optional overrides for the pipeline run.",
+    "type": "object",
+    "properties": {
+      "fetchDaysBack": {
+        "title": "Days back to fetch",
+        "type": "integer",
+        "description": "Rolling window of PTRs to fetch (default 90).",
+        "default": 90,
+        "minimum": 1,
+        "maximum": 365,
+        "editor": "number"
+      },
+      "fromDate": {
+        "title": "From date (YYYY-MM-DD)",
+        "type": "string",
+        "description": "Explicit start date. Overrides fetchDaysBack if set.",
+        "editor": "textfield",
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+      },
+      "toDate": {
+        "title": "To date (YYYY-MM-DD)",
+        "type": "string",
+        "description": "Explicit end date. Defaults to today.",
+        "editor": "textfield",
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+      }
+    }
+  }
+}
