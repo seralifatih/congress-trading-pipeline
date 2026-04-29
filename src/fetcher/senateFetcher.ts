@@ -1,5 +1,7 @@
-import axios, { AxiosError } from 'axios';
+import axios, { AxiosError, AxiosInstance } from 'axios';
 import { HttpsProxyAgent } from 'https-proxy-agent';
+import { wrapper as axiosCookieJarSupport } from 'axios-cookiejar-support';
+import { CookieJar } from 'tough-cookie';
 import { format, subDays } from 'date-fns';
 import type { Agent } from 'https';
 import type { FetchResult, RawTransaction } from '../types/index.js';
@@ -9,26 +11,28 @@ import { withRetry } from '../utils/retry.js';
 
 const log = makeLogger('senateFetcher');
 
-const BASE_URL = 'https://efts.senate.gov/LATEST/search-index';
+const BASE = 'https://efdsearch.senate.gov';
+const HOME_URL = `${BASE}/search/home/`;
+const SEARCH_URL = `${BASE}/search/`;
+const DATA_URL = `${BASE}/search/report/data/`;
 const PAGE_SIZE = 100;
-const TIMEOUT_MS = 10_000;
+const TIMEOUT_MS = 20_000;
 
-const HEADERS = {
+const REPORT_TYPE_PTR = '11'; // Periodic Transaction Report
+
+const BROWSER_HEADERS: Record<string, string> = {
   'User-Agent':
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-  Accept: 'application/json, text/plain, */*',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+  Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
   'Accept-Language': 'en-US,en;q=0.9',
-  Referer: 'https://efts.senate.gov/LATEST/search-index',
+  'Upgrade-Insecure-Requests': '1',
+  'Sec-Fetch-Dest': 'document',
+  'Sec-Fetch-Mode': 'navigate',
+  'Sec-Fetch-Site': 'none',
+  'Sec-Fetch-User': '?1',
 };
 
 // ─── Apify Proxy ──────────────────────────────────────────────────────────────
-// apify.ts sets APIFY_PROXY_URL to a full http://user:pass@host:port string
-// obtained via Actor.createProxyConfiguration().
-//
-// Axios's built-in `proxy` config breaks for HTTPS targets — it tries to
-// resolve the destination DNS locally before connecting to the proxy.
-// HttpsProxyAgent does CONNECT tunneling correctly: client → proxy → DNS
-// resolution + TLS happens on the proxy side.
 
 let cachedAgent: Agent | undefined | null = null;
 
@@ -45,48 +49,191 @@ function getHttpsAgent(): Agent | undefined {
     cachedAgent = new HttpsProxyAgent(raw) as unknown as Agent;
     log.info('Routing via Apify Proxy (HttpsProxyAgent)');
     return cachedAgent;
-  } catch (err) {
+  } catch {
     log.warn(`Invalid APIFY_PROXY_URL: ${raw}`);
     cachedAgent = undefined;
     return undefined;
   }
 }
 
-// ─── Response shapes (internal — not exported) ────────────────────────────────
+// ─── HTTP client with cookie jar ──────────────────────────────────────────────
 
-interface EfdSource {
-  // Filer
-  first_name?: string;
-  last_name?: string;
-  senator_name?: string;
-  // Filing metadata
-  date_filed?: string;
-  filing_date?: string;
-  report_id?: string;
-  // Transaction fields (present on PTR line-items)
-  transaction_date?: string;
-  ticker?: string;
-  asset_name?: string;
-  asset_type?: string;
-  transaction_type?: string;
-  amount?: string;
-  owner?: string;
-  [key: string]: unknown;
+function createClient(): { client: AxiosInstance; jar: CookieJar } {
+  const jar = new CookieJar();
+  const client = axiosCookieJarSupport(
+    axios.create({
+      timeout: TIMEOUT_MS,
+      httpsAgent: getHttpsAgent(),
+      proxy: false,
+      jar,
+      withCredentials: true,
+      headers: BROWSER_HEADERS,
+      validateStatus: (s) => s >= 200 && s < 400, // accept redirects manually
+    }) as AxiosInstance,
+  );
+  return { client, jar };
 }
 
-interface EfdHit {
-  _id: string;
-  _source: EfdSource;
+// ─── CSRF token extraction ────────────────────────────────────────────────────
+
+function extractCsrfFromHtml(html: string): string | null {
+  // Django renders: <input type="hidden" name="csrfmiddlewaretoken" value="...">
+  const match = html.match(/name=["']csrfmiddlewaretoken["']\s+value=["']([^"']+)["']/);
+  return match?.[1] ?? null;
 }
 
-interface EfdResponse {
-  hits: {
-    total: { value: number } | number;
-    hits: EfdHit[];
+async function getCsrfFromCookie(jar: CookieJar, url: string): Promise<string | null> {
+  const cookies = await jar.getCookies(url);
+  const csrf = cookies.find((c) => c.key === 'csrftoken');
+  return csrf?.value ?? null;
+}
+
+// ─── Step 1+2: handshake — accept terms, get session ─────────────────────────
+
+async function handshake(client: AxiosInstance, jar: CookieJar): Promise<string> {
+  log.info('Handshake: GET /search/home/');
+  const homeRes = await client.get(HOME_URL);
+
+  if (typeof homeRes.data !== 'string') {
+    throw new Error(`Home page returned non-HTML response (status ${homeRes.status})`);
+  }
+
+  const csrfFromForm = extractCsrfFromHtml(homeRes.data);
+  if (!csrfFromForm) {
+    throw new Error('Could not find csrfmiddlewaretoken in home page HTML');
+  }
+
+  log.info('Handshake: POST /search/home/ (accept terms)');
+  const formData = new URLSearchParams({
+    csrfmiddlewaretoken: csrfFromForm,
+    prohibition_agreement: '1',
+  });
+
+  await client.post(HOME_URL, formData.toString(), {
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Referer: HOME_URL,
+      Origin: BASE,
+    },
+    maxRedirects: 5,
+  });
+
+  // Cookie jar now holds session + fresh csrftoken
+  const csrf = await getCsrfFromCookie(jar, BASE);
+  if (!csrf) throw new Error('No csrftoken in cookie jar after handshake');
+  log.info('Handshake complete');
+  return csrf;
+}
+
+// ─── Step 3: data fetch ───────────────────────────────────────────────────────
+// Senate EFD returns DataTables format. Each row is a string array:
+//   [first_name_link, last_name, office_label, report_type_link, filed_date]
+// `report_type_link` is HTML: <a href="/search/view/ptr/<uuid>/">Periodic Transaction Report</a>
+
+interface DataTablesResponse {
+  draw: number;
+  recordsTotal: number;
+  recordsFiltered: number;
+  data: string[][];
+}
+
+function toMmDdYyyy(yyyyMmDd: string): string {
+  const [y, m, d] = yyyyMmDd.split('-');
+  return `${m}/${d}/${y}`;
+}
+
+async function fetchDataPage(
+  client: AxiosInstance,
+  csrf: string,
+  start: number,
+  fromDate: string,
+  toDate: string,
+): Promise<DataTablesResponse> {
+  const body = {
+    start,
+    length: PAGE_SIZE,
+    report_types: `[${REPORT_TYPE_PTR}]`,
+    filer_types: '[]',
+    submitted_start_date: toMmDdYyyy(fromDate),
+    submitted_end_date: toMmDdYyyy(toDate),
+    candidate_state: '',
+    senator_state: '',
+    office_id: '',
+    first_name: '',
+    last_name: '',
+    submit: 'Search Reports',
+  };
+
+  const res = await client.post<DataTablesResponse>(DATA_URL, body, {
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRFToken': csrf,
+      Referer: SEARCH_URL,
+      Origin: BASE,
+      'X-Requested-With': 'XMLHttpRequest',
+      Accept: 'application/json, text/javascript, */*; q=0.01',
+    },
+  });
+
+  if (typeof res.data !== 'object' || !Array.isArray(res.data?.data)) {
+    throw new Error(`Unexpected data response shape (status ${res.status})`);
+  }
+
+  return res.data;
+}
+
+// ─── Row → RawTransaction mapping ─────────────────────────────────────────────
+// One row from DataTables = one PTR FILING (not one transaction).
+// Transactions are inside the PTR document itself. For MVP we record the
+// filing metadata; Phase 2 will fetch each PTR and parse line items.
+
+const HREF_RE = /href=["']([^"']+)["']/;
+
+function extractText(htmlOrText: string): string {
+  return htmlOrText.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+}
+
+function rowToRawTransaction(row: string[]): RawTransaction | null {
+  if (row.length < 5) return null;
+
+  const [firstNameCell, lastNameCell, officeCell, reportCell, filedDateCell] = row;
+  if (!firstNameCell || !lastNameCell || !reportCell || !filedDateCell) return null;
+
+  const firstName = extractText(firstNameCell);
+  const lastName = extractText(lastNameCell);
+  const politician = `${firstName} ${lastName}`.trim();
+
+  const reportLinkMatch = reportCell.match(HREF_RE);
+  const reportPath = reportLinkMatch?.[1] ?? '';
+  const reportLabel = extractText(reportCell);
+
+  // source_id = ptr UUID from URL path; falls back to politician+date+label
+  const uuidMatch = reportPath.match(/\/ptr\/([a-f0-9-]+)/i);
+  const sourceId = uuidMatch?.[1] ?? `${politician}|${filedDateCell}|${reportLabel}`;
+
+  return {
+    politician,
+    transaction_date: '',                 // not in listing — comes from PTR detail page
+    filing_date: extractText(filedDateCell),
+    ticker: '',
+    asset_name: reportLabel,              // listing only has report label; PTR detail has assets
+    asset_type: extractText(officeCell ?? ''),
+    type: '',
+    amount: '',
+    owner: '',
+    source_id: sourceId,
+    raw_json: {
+      first_name: firstName,
+      last_name: lastName,
+      office: extractText(officeCell ?? ''),
+      report_label: reportLabel,
+      report_path: reportPath,
+      filed_date: extractText(filedDateCell),
+    },
   };
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Public API ───────────────────────────────────────────────────────────────
 
 function isoToday(): string {
   return format(new Date(), 'yyyy-MM-dd');
@@ -96,81 +243,26 @@ function isoDefaultStart(): string {
   return format(subDays(new Date(), config.FETCH_DAYS_BACK), 'yyyy-MM-dd');
 }
 
-function totalCount(response: EfdResponse): number {
-  const t = response.hits.total;
-  return typeof t === 'number' ? t : t.value;
-}
-
-function buildUrl(fromDate: string, toDate: string, offset: number): string {
-  const params = new URLSearchParams({
-    q: '""',
-    dateRange: 'custom',
-    fromDate,
-    toDate,
-    results: String(PAGE_SIZE),
-    start: String(offset),
-  });
-  return `${BASE_URL}?${params.toString()}`;
-}
-
-function resolveName(src: EfdSource): string {
-  if (src.senator_name) return src.senator_name.trim();
-  const parts = [src.first_name, src.last_name].filter(Boolean);
-  if (parts.length > 0) return parts.join(' ').trim();
-  return 'Unknown';
-}
-
-function resolveFilingDate(src: EfdSource): string {
-  return src.date_filed ?? src.filing_date ?? '';
-}
-
-function hitToRawTransaction(hit: EfdHit): RawTransaction {
-  const s = hit._source;
-  return {
-    politician: resolveName(s),
-    transaction_date: s.transaction_date ?? '',
-    filing_date: resolveFilingDate(s),
-    ticker: s.ticker ?? '',
-    asset_name: s.asset_name ?? '',
-    asset_type: s.asset_type ?? '',
-    type: s.transaction_type ?? '',
-    amount: s.amount ?? '',
-    owner: s.owner ?? '',
-    source_id: hit._id,
-    raw_json: s as Record<string, unknown>,
-  };
-}
-
-// ─── Core page fetch ──────────────────────────────────────────────────────────
-
 export async function fetchPage(
   offset: number,
   fromDate: string = isoDefaultStart(),
   toDate: string = isoToday(),
 ): Promise<FetchResult> {
-  const url = buildUrl(fromDate, toDate, offset);
-  log.info(`GET offset=${offset} from=${fromDate} to=${toDate}`);
+  const { client, jar } = createClient();
 
   try {
+    const csrf = await withRetry(() => handshake(client, jar), 2, 750);
     const response = await withRetry(
-      () => axios.get<EfdResponse>(url, {
-        headers: HEADERS,
-        timeout: TIMEOUT_MS,
-        httpsAgent: getHttpsAgent(),
-        proxy: false,
-      }),
+      () => fetchDataPage(client, csrf, offset, fromDate, toDate),
       3,
       500,
     );
 
-    const hits = response.data?.hits?.hits;
-    if (!Array.isArray(hits)) {
-      log.warn('Unexpected response shape — hits.hits is not an array');
-      return { success: true, records: [] };
-    }
+    const records = response.data
+      .map(rowToRawTransaction)
+      .filter((r): r is RawTransaction => r !== null);
 
-    const records = hits.map(hitToRawTransaction);
-    log.info(`Page offset=${offset}: ${records.length} records`);
+    log.info(`Page offset=${offset}: ${records.length}/${response.data.length} rows mapped`);
     return { success: true, records };
   } catch (err) {
     const message = toAxiosMessage(err);
@@ -179,38 +271,36 @@ export async function fetchPage(
   }
 }
 
-// ─── Paginated fetch-all ──────────────────────────────────────────────────────
-
 export async function fetchAll(
   fromDate: string = isoDefaultStart(),
   toDate: string = isoToday(),
 ): Promise<FetchResult> {
   log.info(`fetchAll from=${fromDate} to=${toDate}`);
 
-  // First page — also tells us the total count
-  const firstUrl = buildUrl(fromDate, toDate, 0);
+  const { client, jar } = createClient();
+  let csrf: string;
+
+  try {
+    csrf = await withRetry(() => handshake(client, jar), 2, 750);
+  } catch (err) {
+    const message = toAxiosMessage(err);
+    log.error(`Handshake failed: ${message}`);
+    return { success: false, records: [], error: `Handshake failed: ${message}` };
+  }
+
   let total: number;
   let allRecords: RawTransaction[] = [];
 
   try {
-    const firstResponse = await withRetry(
-      () => axios.get<EfdResponse>(firstUrl, {
-        headers: HEADERS,
-        timeout: TIMEOUT_MS,
-        httpsAgent: getHttpsAgent(),
-        proxy: false,
-      }),
+    const first = await withRetry(
+      () => fetchDataPage(client, csrf, 0, fromDate, toDate),
       3,
       500,
     );
-
-    const hits = firstResponse.data?.hits?.hits;
-    if (!Array.isArray(hits)) {
-      return { success: false, records: [], error: 'Unexpected response shape on first page' };
-    }
-
-    total = totalCount(firstResponse.data);
-    allRecords = hits.map(hitToRawTransaction);
+    total = first.recordsFiltered ?? first.recordsTotal ?? 0;
+    allRecords = first.data
+      .map(rowToRawTransaction)
+      .filter((r): r is RawTransaction => r !== null);
     log.info(`Total records reported by API: ${total}`);
   } catch (err) {
     const message = toAxiosMessage(err);
@@ -218,22 +308,29 @@ export async function fetchAll(
     return { success: false, records: [], error: message };
   }
 
-  // Remaining pages
   let offset = PAGE_SIZE;
   while (offset < total) {
-    const result = await fetchPage(offset, fromDate, toDate);
-    if (!result.success) {
-      // Partial success — return what we have with a warning
-      log.warn(`Stopping pagination early at offset=${offset}: ${result.error}`);
+    try {
+      const page = await withRetry(
+        () => fetchDataPage(client, csrf, offset, fromDate, toDate),
+        3,
+        500,
+      );
+      if (page.data.length === 0) break;
+      const mapped = page.data
+        .map(rowToRawTransaction)
+        .filter((r): r is RawTransaction => r !== null);
+      allRecords.push(...mapped);
+      offset += PAGE_SIZE;
+    } catch (err) {
+      const message = toAxiosMessage(err);
+      log.warn(`Stopping pagination early at offset=${offset}: ${message}`);
       return {
         success: false,
         records: allRecords,
-        error: `Partial fetch (${allRecords.length}/${total}): ${result.error}`,
+        error: `Partial fetch (${allRecords.length}/${total}): ${message}`,
       };
     }
-    if (result.records.length === 0) break; // API returned empty page before total — stop
-    allRecords.push(...result.records);
-    offset += PAGE_SIZE;
   }
 
   log.info(`fetchAll complete: ${allRecords.length} records collected`);
