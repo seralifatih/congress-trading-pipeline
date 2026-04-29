@@ -168,25 +168,27 @@ async function fetchDataPage(
   start: number,
   fromDate: string,
   toDate: string,
+  draw: number,
 ): Promise<DataTablesResponse> {
-  const body = {
-    start,
-    length: PAGE_SIZE,
+  // Form-encoded body — Django expects application/x-www-form-urlencoded.
+  const body = new URLSearchParams({
+    draw: String(draw),
+    start: String(start),
+    length: String(PAGE_SIZE),
     report_types: `[${REPORT_TYPE_PTR}]`,
     filer_types: '[]',
-    submitted_start_date: toMmDdYyyy(fromDate),
-    submitted_end_date: toMmDdYyyy(toDate),
+    submitted_start_date: `${toMmDdYyyy(fromDate)} 00:00:00`,
+    submitted_end_date: `${toMmDdYyyy(toDate)} 23:59:59`,
     candidate_state: '',
     senator_state: '',
     office_id: '',
     first_name: '',
     last_name: '',
-    submit: 'Search Reports',
-  };
+  });
 
-  const res = await client.post<DataTablesResponse>(DATA_URL, body, {
+  const res = await client.post<DataTablesResponse>(DATA_URL, body.toString(), {
     headers: {
-      'Content-Type': 'application/json',
+      'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
       'X-CSRFToken': csrf,
       Referer: SEARCH_URL,
       Origin: BASE,
@@ -273,7 +275,7 @@ export async function fetchPage(
   try {
     const csrf = await withRetry(() => handshake(client, jar), 2, 750);
     const response = await withRetry(
-      () => fetchDataPage(client, csrf, offset, fromDate, toDate),
+      () => fetchDataPage(client, csrf, offset, fromDate, toDate, 1),
       3,
       500,
     );
@@ -310,10 +312,11 @@ export async function fetchAll(
 
   let total: number;
   let allRecords: RawTransaction[] = [];
+  let drawCounter = 1;
 
   try {
     const first = await withRetry(
-      () => fetchDataPage(client, csrf, 0, fromDate, toDate),
+      () => fetchDataPage(client, csrf, 0, fromDate, toDate, drawCounter++),
       3,
       500,
     );
@@ -332,7 +335,7 @@ export async function fetchAll(
   while (offset < total) {
     try {
       const page = await withRetry(
-        () => fetchDataPage(client, csrf, offset, fromDate, toDate),
+        () => fetchDataPage(client, csrf, offset, fromDate, toDate, drawCounter++),
         3,
         500,
       );
