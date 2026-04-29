@@ -1,6 +1,5 @@
-import axios, { AxiosError, AxiosInstance } from 'axios';
+import axios, { AxiosError, AxiosInstance, InternalAxiosRequestConfig, AxiosResponse } from 'axios';
 import { HttpsProxyAgent } from 'https-proxy-agent';
-import { wrapper as axiosCookieJarSupport } from 'axios-cookiejar-support';
 import { CookieJar } from 'tough-cookie';
 import { format, subDays } from 'date-fns';
 import type { Agent } from 'https';
@@ -60,17 +59,38 @@ function getHttpsAgent(): Agent | undefined {
 
 function createClient(): { client: AxiosInstance; jar: CookieJar } {
   const jar = new CookieJar();
-  const client = axiosCookieJarSupport(
-    axios.create({
-      timeout: TIMEOUT_MS,
-      httpsAgent: getHttpsAgent(),
-      proxy: false,
-      jar,
-      withCredentials: true,
-      headers: BROWSER_HEADERS,
-      validateStatus: (s) => s >= 200 && s < 400, // accept redirects manually
-    }) as AxiosInstance,
-  );
+  const client = axios.create({
+    timeout: TIMEOUT_MS,
+    httpsAgent: getHttpsAgent(),
+    proxy: false,
+    headers: BROWSER_HEADERS,
+    validateStatus: (s) => s >= 200 && s < 400,
+  });
+
+  // Manual cookie jar — request: attach Cookie header from jar
+  client.interceptors.request.use(async (cfg: InternalAxiosRequestConfig) => {
+    if (!cfg.url) return cfg;
+    const fullUrl = cfg.url.startsWith('http') ? cfg.url : `${BASE}${cfg.url}`;
+    const cookieHeader = await jar.getCookieString(fullUrl);
+    if (cookieHeader) cfg.headers.set('Cookie', cookieHeader);
+    return cfg;
+  });
+
+  // Manual cookie jar — response: persist Set-Cookie headers into jar
+  client.interceptors.response.use(async (res: AxiosResponse) => {
+    const setCookie = res.headers['set-cookie'];
+    if (setCookie) {
+      const list = Array.isArray(setCookie) ? setCookie : [setCookie];
+      const fullUrl = res.config.url?.startsWith('http')
+        ? res.config.url
+        : `${BASE}${res.config.url ?? ''}`;
+      for (const c of list) {
+        try { await jar.setCookie(c, fullUrl); } catch { /* malformed cookie — ignore */ }
+      }
+    }
+    return res;
+  });
+
   return { client, jar };
 }
 

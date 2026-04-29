@@ -13,7 +13,6 @@
   "dependencies": {
     "apify": "^3.7.0",
     "axios": "^1.7.2",
-    "axios-cookiejar-support": "^6.0.5",
     "better-sqlite3": "^11.10.0",
     "cheerio": "^1.0.0",
     "date-fns": "^4.1.0",
