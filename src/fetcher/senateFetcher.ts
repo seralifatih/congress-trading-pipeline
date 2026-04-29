@@ -1,6 +1,7 @@
 import axios, { AxiosError } from 'axios';
-import type { AxiosRequestConfig } from 'axios';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 import { format, subDays } from 'date-fns';
+import type { Agent } from 'https';
 import type { FetchResult, RawTransaction } from '../types/index.js';
 import { makeLogger } from '../utils/logger.js';
 import { config } from '../utils/config.js';
@@ -22,22 +23,31 @@ const HEADERS = {
 
 // ─── Apify Proxy ──────────────────────────────────────────────────────────────
 // apify.ts sets APIFY_PROXY_URL to a full http://user:pass@host:port string
-// obtained via Actor.createProxyConfiguration(). Parse it for axios.
+// obtained via Actor.createProxyConfiguration().
+//
+// Axios's built-in `proxy` config breaks for HTTPS targets — it tries to
+// resolve the destination DNS locally before connecting to the proxy.
+// HttpsProxyAgent does CONNECT tunneling correctly: client → proxy → DNS
+// resolution + TLS happens on the proxy side.
 
-function getProxyConfig(): AxiosRequestConfig['proxy'] | undefined {
+let cachedAgent: Agent | undefined | null = null;
+
+function getHttpsAgent(): Agent | undefined {
+  if (cachedAgent !== null) return cachedAgent;
+
   const raw = process.env['APIFY_PROXY_URL'];
-  if (!raw) return undefined;
+  if (!raw) {
+    cachedAgent = undefined;
+    return undefined;
+  }
 
   try {
-    const u = new URL(raw);
-    log.info('Routing via Apify Proxy');
-    return {
-      host: u.hostname,
-      port: parseInt(u.port, 10) || 8000,
-      auth: u.username ? { username: u.username, password: u.password } : undefined,
-    };
-  } catch {
+    cachedAgent = new HttpsProxyAgent(raw) as unknown as Agent;
+    log.info('Routing via Apify Proxy (HttpsProxyAgent)');
+    return cachedAgent;
+  } catch (err) {
     log.warn(`Invalid APIFY_PROXY_URL: ${raw}`);
+    cachedAgent = undefined;
     return undefined;
   }
 }
@@ -143,7 +153,12 @@ export async function fetchPage(
 
   try {
     const response = await withRetry(
-      () => axios.get<EfdResponse>(url, { headers: HEADERS, timeout: TIMEOUT_MS, proxy: getProxyConfig() }),
+      () => axios.get<EfdResponse>(url, {
+        headers: HEADERS,
+        timeout: TIMEOUT_MS,
+        httpsAgent: getHttpsAgent(),
+        proxy: false,
+      }),
       3,
       500,
     );
@@ -179,7 +194,12 @@ export async function fetchAll(
 
   try {
     const firstResponse = await withRetry(
-      () => axios.get<EfdResponse>(firstUrl, { headers: HEADERS, timeout: TIMEOUT_MS }),
+      () => axios.get<EfdResponse>(firstUrl, {
+        headers: HEADERS,
+        timeout: TIMEOUT_MS,
+        httpsAgent: getHttpsAgent(),
+        proxy: false,
+      }),
       3,
       500,
     );
