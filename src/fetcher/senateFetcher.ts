@@ -1,4 +1,5 @@
 import axios, { AxiosError } from 'axios';
+import type { AxiosRequestConfig } from 'axios';
 import { format, subDays } from 'date-fns';
 import type { FetchResult, RawTransaction } from '../types/index.js';
 import { makeLogger } from '../utils/logger.js';
@@ -18,6 +19,22 @@ const HEADERS = {
   'Accept-Language': 'en-US,en;q=0.9',
   Referer: 'https://efts.senate.gov/LATEST/search-index',
 };
+
+// ─── Apify Proxy ──────────────────────────────────────────────────────────────
+// When running on Apify platform, APIFY_PROXY_PASSWORD is injected automatically.
+// Route through residential proxy to avoid datacenter IP blocks on government sites.
+
+function getProxyConfig(): AxiosRequestConfig['proxy'] | undefined {
+  const password = process.env['APIFY_PROXY_PASSWORD'];
+  if (!password) return undefined;
+
+  log.info('Routing via Apify Proxy (residential)');
+  return {
+    host: 'proxy.apify.com',
+    port: 8000,
+    auth: { username: 'groups-RESIDENTIAL', password },
+  };
+}
 
 // ─── Response shapes (internal — not exported) ────────────────────────────────
 
@@ -120,7 +137,7 @@ export async function fetchPage(
 
   try {
     const response = await withRetry(
-      () => axios.get<EfdResponse>(url, { headers: HEADERS, timeout: TIMEOUT_MS }),
+      () => axios.get<EfdResponse>(url, { headers: HEADERS, timeout: TIMEOUT_MS, proxy: getProxyConfig() }),
       3,
       500,
     );
