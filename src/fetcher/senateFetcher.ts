@@ -21,19 +21,25 @@ const HEADERS = {
 };
 
 // ─── Apify Proxy ──────────────────────────────────────────────────────────────
-// When running on Apify platform, APIFY_PROXY_PASSWORD is injected automatically.
-// Route through residential proxy to avoid datacenter IP blocks on government sites.
+// apify.ts sets APIFY_PROXY_URL to a full http://user:pass@host:port string
+// obtained via Actor.createProxyConfiguration(). Parse it for axios.
 
 function getProxyConfig(): AxiosRequestConfig['proxy'] | undefined {
-  const password = process.env['APIFY_PROXY_PASSWORD'];
-  if (!password) return undefined;
+  const raw = process.env['APIFY_PROXY_URL'];
+  if (!raw) return undefined;
 
-  log.info('Routing via Apify Proxy (residential)');
-  return {
-    host: 'proxy.apify.com',
-    port: 8000,
-    auth: { username: 'groups-RESIDENTIAL', password },
-  };
+  try {
+    const u = new URL(raw);
+    log.info('Routing via Apify Proxy');
+    return {
+      host: u.hostname,
+      port: parseInt(u.port, 10) || 8000,
+      auth: u.username ? { username: u.username, password: u.password } : undefined,
+    };
+  } catch {
+    log.warn(`Invalid APIFY_PROXY_URL: ${raw}`);
+    return undefined;
+  }
 }
 
 // ─── Response shapes (internal — not exported) ────────────────────────────────

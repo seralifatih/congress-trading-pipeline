@@ -20,6 +20,19 @@ async function main(): Promise<void> {
 
     if (input.fetchDaysBack) process.env['FETCH_DAYS_BACK'] = String(input.fetchDaysBack);
 
+    // Request proxy from the platform — gives a routable URL usable by axios
+    const proxyConfig = await Actor.createProxyConfiguration({
+      groups: ['RESIDENTIAL'],
+    }).catch(() => null); // non-fatal: runs without proxy if unavailable
+
+    const proxyUrl = proxyConfig ? await proxyConfig.newUrl() : undefined;
+    if (proxyUrl) {
+      log.info('Proxy acquired', { url: proxyUrl.replace(/:[^:@]+@/, ':***@') });
+      process.env['APIFY_PROXY_URL'] = proxyUrl;
+    } else {
+      log.warn('No proxy available — requests will use direct connection');
+    }
+
     const store = ApifyStore.getInstance();
     const stats = await runPipeline(store, {
       fromDate: input.fromDate,
