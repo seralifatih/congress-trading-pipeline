@@ -30,7 +30,7 @@ async function main(): Promise<void> {
       groups: ['RESIDENTIAL'],
     }).catch(() => null);
 
-    const sessionId = `senate-${Date.now()}`;
+    const sessionId = `senate_${Date.now()}`;
     const proxyUrl = proxyConfig ? await proxyConfig.newUrl(sessionId) : undefined;
     if (proxyUrl) {
       log.info('Proxy acquired', {
