@@ -22,14 +22,21 @@ async function main(): Promise<void> {
     if (input.fetchDaysBack) process.env['FETCH_DAYS_BACK'] = String(input.fetchDaysBack);
     if (input.debugPtrLimit) process.env['DEBUG_PTR_LIMIT'] = String(input.debugPtrLimit);
 
-    // Request proxy from the platform — gives a routable URL usable by axios
+    // Request proxy from the platform — gives a routable URL usable by axios.
+    // Pass a stable sessionId so all requests share the SAME residential exit IP.
+    // Django keeps prohibition_agreement state per-IP; rotating IPs invalidates
+    // it and PTR pages redirect to home.
     const proxyConfig = await Actor.createProxyConfiguration({
       groups: ['RESIDENTIAL'],
-    }).catch(() => null); // non-fatal: runs without proxy if unavailable
+    }).catch(() => null);
 
-    const proxyUrl = proxyConfig ? await proxyConfig.newUrl() : undefined;
+    const sessionId = `senate-${Date.now()}`;
+    const proxyUrl = proxyConfig ? await proxyConfig.newUrl(sessionId) : undefined;
     if (proxyUrl) {
-      log.info('Proxy acquired', { url: proxyUrl.replace(/:[^:@]+@/, ':***@') });
+      log.info('Proxy acquired', {
+        url: proxyUrl.replace(/:[^:@]+@/, ':***@'),
+        sessionId,
+      });
       process.env['APIFY_PROXY_URL'] = proxyUrl;
     } else {
       log.warn('No proxy available — requests will use direct connection');
