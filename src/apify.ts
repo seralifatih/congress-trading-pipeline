@@ -48,8 +48,8 @@ async function main(): Promise<void> {
     const stats = await runPipeline(store, {
       fromDate: input.fromDate,
       toDate: input.toDate,
-      includeSenate: input.includeSenate,
-      includeHouse: input.includeHouse,
+      includeSenate: true,
+      includeHouse: false, // Senate-only actor — House lives in separate actor
     });
 
     log.info('Actor complete', stats);

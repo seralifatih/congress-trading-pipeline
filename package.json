@@ -6,6 +6,7 @@
     "dev": "ts-node --esm src/index.ts",
     "start": "node dist/index.js",
     "apify-start": "node dist/apify.js",
+    "apify-house-start": "node dist/apifyHouse.js",
     "build": "tsc",
     "seed": "ts-node --esm scripts/seed.ts",
     "smoke": "ts-node --esm scripts/smoke-test.ts"

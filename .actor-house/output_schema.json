@@ -1,0 +1,19 @@
+{
+  "actorOutputSchemaVersion": 1,
+  "title": "U.S. House Trading Pipeline output",
+  "description": "Normalized U.S. House PTR transaction records, one item per individual trade.",
+  "properties": {
+    "transactions": {
+      "type": "string",
+      "title": "Transactions",
+      "description": "All normalized House trades from PTRs filed in the requested date window.",
+      "template": "{{links.apiDefaultDatasetUrl}}/items"
+    },
+    "runStats": {
+      "type": "string",
+      "title": "Run summary",
+      "description": "Pipeline run statistics: inserted, skipped, errors. Stored under OUTPUT key.",
+      "template": "{{links.apiDefaultKeyValueStoreUrl}}/records/OUTPUT"
+    }
+  }
+}
