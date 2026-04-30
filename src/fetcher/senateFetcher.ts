@@ -60,15 +60,19 @@ function getHttpsAgent(): Agent | undefined {
 
 function createClient(): { client: AxiosInstance; jar: CookieJar } {
   const jar = new CookieJar();
+
+  // Disable axios's built-in redirect following so we can capture Set-Cookie
+  // from every step of the redirect chain (Django sets sessionid on the 302,
+  // not on the final 200, and axios's internal follower drops those headers).
   const client = axios.create({
     timeout: TIMEOUT_MS,
     httpsAgent: getHttpsAgent(),
     proxy: false,
     headers: BROWSER_HEADERS,
-    validateStatus: (s) => s >= 200 && s < 400,
+    maxRedirects: 0,
+    validateStatus: (s) => s >= 200 && s < 400, // accept 3xx so axios doesn't throw
   });
 
-  // Manual cookie jar — request: attach Cookie header from jar
   client.interceptors.request.use(async (cfg: InternalAxiosRequestConfig) => {
     if (!cfg.url) return cfg;
     const fullUrl = cfg.url.startsWith('http') ? cfg.url : `${BASE}${cfg.url}`;
@@ -77,22 +81,53 @@ function createClient(): { client: AxiosInstance; jar: CookieJar } {
     return cfg;
   });
 
-  // Manual cookie jar — response: persist Set-Cookie headers into jar
   client.interceptors.response.use(async (res: AxiosResponse) => {
     const setCookie = res.headers['set-cookie'];
     if (setCookie) {
       const list = Array.isArray(setCookie) ? setCookie : [setCookie];
-      const fullUrl = res.config.url?.startsWith('http')
+      const requestedUrl = res.config.url?.startsWith('http')
         ? res.config.url
         : `${BASE}${res.config.url ?? ''}`;
       for (const c of list) {
-        try { await jar.setCookie(c, fullUrl); } catch { /* malformed cookie — ignore */ }
+        try { await jar.setCookie(c, requestedUrl); } catch { /* ignore */ }
       }
     }
     return res;
   });
 
   return { client, jar };
+}
+
+// ─── Manual redirect walker ──────────────────────────────────────────────────
+// Calls client.get/post then follows 3xx Location headers manually so each
+// hop's Set-Cookie is captured by the response interceptor.
+
+async function followRedirects<T>(
+  client: AxiosInstance,
+  initial: () => Promise<AxiosResponse<T>>,
+  maxHops: number = 5,
+): Promise<AxiosResponse<T>> {
+  let res = await initial();
+  let hops = 0;
+
+  while (res.status >= 300 && res.status < 400 && hops < maxHops) {
+    const location = res.headers['location'];
+    if (!location) break;
+    const nextUrl = location.startsWith('http') ? location : `${BASE}${location}`;
+    hops++;
+    res = await client.get<T>(nextUrl, {
+      headers: {
+        Referer: res.config.url ?? BASE,
+        Accept: res.config.headers?.['Accept'] as string | undefined ?? '*/*',
+      },
+      transformResponse: res.config.transformResponse,
+    }) as AxiosResponse<T>;
+  }
+
+  if (res.status >= 300 && res.status < 400) {
+    throw new Error(`Too many redirects (>${maxHops}) starting from ${res.config.url}`);
+  }
+  return res;
 }
 
 // ─── CSRF token extraction ────────────────────────────────────────────────────
@@ -113,7 +148,9 @@ async function getCsrfFromCookie(jar: CookieJar, url: string): Promise<string | 
 
 async function handshake(client: AxiosInstance, jar: CookieJar): Promise<string> {
   log.info('Handshake: GET /search/home/');
-  const homeRes = await client.get(HOME_URL);
+  const homeRes = await followRedirects(client, () =>
+    client.get<string>(HOME_URL, { transformResponse: (v) => v }),
+  );
 
   if (typeof homeRes.data !== 'string') {
     throw new Error(`Home page returned non-HTML response (status ${homeRes.status})`);
@@ -130,14 +167,15 @@ async function handshake(client: AxiosInstance, jar: CookieJar): Promise<string>
     prohibition_agreement: '1',
   });
 
-  await client.post(HOME_URL, formData.toString(), {
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      Referer: HOME_URL,
-      Origin: BASE,
-    },
-    maxRedirects: 5,
-  });
+  await followRedirects(client, () =>
+    client.post(HOME_URL, formData.toString(), {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Referer: HOME_URL,
+        Origin: BASE,
+      },
+    }),
+  );
 
   // Cookie jar now holds session + fresh csrftoken
   const csrf = await getCsrfFromCookie(jar, BASE);
@@ -190,16 +228,18 @@ async function fetchDataPage(
     csrfmiddlewaretoken: csrf,
   });
 
-  const res = await client.post<DataTablesResponse>(DATA_URL, body.toString(), {
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-      'X-CSRFToken': csrf,
-      Referer: SEARCH_URL,
-      Origin: BASE,
-      'X-Requested-With': 'XMLHttpRequest',
-      Accept: 'application/json, text/javascript, */*; q=0.01',
-    },
-  });
+  const res = await followRedirects(client, () =>
+    client.post<DataTablesResponse>(DATA_URL, body.toString(), {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'X-CSRFToken': csrf,
+        Referer: SEARCH_URL,
+        Origin: BASE,
+        'X-Requested-With': 'XMLHttpRequest',
+        Accept: 'application/json, text/javascript, */*; q=0.01',
+      },
+    }),
+  );
 
   if (typeof res.data !== 'object' || !Array.isArray(res.data?.data)) {
     throw new Error(`Unexpected data response shape (status ${res.status})`);
@@ -263,21 +303,19 @@ async function fetchPtrHtmlOnce(
   reportPath: string,
 ): Promise<{ html: string; status: number; finalUrl: string }> {
   const url = reportPath.startsWith('http') ? reportPath : `${BASE}${reportPath}`;
-  const res = await client.get<string>(url, {
-    headers: {
-      Referer: SEARCH_URL,
-      Accept: 'text/html,application/xhtml+xml',
-    },
-    transformResponse: (v) => v,
-    maxRedirects: 5,
-    // Capture redirects explicitly — log them so we know what's happening
-  });
+  const res = await followRedirects(client, () =>
+    client.get<string>(url, {
+      headers: {
+        Referer: SEARCH_URL,
+        Accept: 'text/html,application/xhtml+xml',
+      },
+      transformResponse: (v) => v,
+    }),
+  );
   if (typeof res.data !== 'string') {
     throw new Error(`PTR detail returned non-string body (status ${res.status})`);
   }
-  // axios stores the final URL (after redirects) on res.request.res.responseUrl in Node
-  const reqAny = res.request as { res?: { responseUrl?: string } } | undefined;
-  const finalUrl = reqAny?.res?.responseUrl ?? url;
+  const finalUrl = res.config.url ?? url;
   return { html: res.data, status: res.status, finalUrl };
 }
 
