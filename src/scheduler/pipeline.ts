@@ -1,5 +1,6 @@
 import { format, subDays } from 'date-fns';
 import { fetchAll } from '../fetcher/senateFetcher.js';
+import { fetchAllHouse } from '../fetcher/houseFetcher.js';
 import { parseHtml } from '../parser/index.js';
 import { normalizeAll } from '../transformer/normalize.js';
 import { SqliteStore } from '../store/sqliteStore.js';
@@ -7,7 +8,7 @@ import { dedup, generateId } from '../utils/dedup.js';
 import { makeLogger } from '../utils/logger.js';
 import { toErrorMessage } from '../utils/errors.js';
 import { config } from '../utils/config.js';
-import type { Transaction, StoreAdapter } from '../types/index.js';
+import type { Transaction, StoreAdapter, RawTransaction, FetchResult } from '../types/index.js';
 
 const log = makeLogger('pipeline');
 
@@ -20,6 +21,8 @@ export interface PipelineStats {
 export interface PipelineOptions {
   fromDate?: string;
   toDate?: string;
+  includeSenate?: boolean;
+  includeHouse?: boolean;
 }
 
 export async function runPipeline(
@@ -31,36 +34,53 @@ export async function runPipeline(
   const fromDate = options.fromDate ?? format(subDays(new Date(), config.FETCH_DAYS_BACK), 'yyyy-MM-dd');
   const toDate   = options.toDate   ?? format(new Date(), 'yyyy-MM-dd');
 
-  // ── Step 1: Fetch ────────────────────────────────────────────────────────────
-  const fetchResult = await fetchAll(fromDate, toDate);
+  const includeSenate = options.includeSenate !== false;
+  const includeHouse  = options.includeHouse  !== false;
 
-  if (!fetchResult.success && fetchResult.records.length === 0) {
-    log.error(`Fetch failed with no records: ${fetchResult.error}`);
+  // ── Step 1: Fetch from Senate + House in parallel ───────────────────────────
+  const emptyResult: FetchResult = { success: true, records: [] };
+  const [senateResult, houseResult] = await Promise.all<FetchResult>([
+    includeSenate ? fetchAll(fromDate, toDate) : Promise.resolve(emptyResult),
+    includeHouse  ? fetchAllHouse(fromDate, toDate) : Promise.resolve(emptyResult),
+  ]);
+
+  if (includeSenate) {
+    log.info(`Senate: ${senateResult.records.length} records${senateResult.success ? '' : ` (partial: ${senateResult.error})`}`);
+  }
+  if (includeHouse) {
+    log.info(`House: ${houseResult.records.length} records${houseResult.success ? '' : ` (partial: ${houseResult.error})`}`);
+  }
+
+  const rawRecords: RawTransaction[] = [...senateResult.records, ...houseResult.records];
+
+  if (rawRecords.length === 0) {
+    const senateErr = senateResult.success ? '' : ` Senate: ${senateResult.error}.`;
+    const houseErr  = houseResult.success  ? '' : ` House: ${houseResult.error}.`;
+    log.error(`Fetch failed with no records.${senateErr}${houseErr}`);
     return { inserted: 0, skipped: 0, errors: 1 };
   }
 
-  if (!fetchResult.success) {
-    log.warn(`Partial fetch (${fetchResult.records.length} records): ${fetchResult.error}`);
-  }
-
-  const rawRecords = fetchResult.records;
-  log.info(`Fetched ${rawRecords.length} raw records`);
+  log.info(`Fetched ${rawRecords.length} raw records total (Senate=${senateResult.records.length}, House=${houseResult.records.length})`);
 
   // ── Step 2: Parse ────────────────────────────────────────────────────────────
+  // Both fetchers already produce RawTransaction shape. Senate HTML fallback
+  // applies only to Senate listings.
   let parsedRecords = rawRecords;
 
-  const structuredEmpty = rawRecords.every((r) => !r.asset_name.trim());
-  if (structuredEmpty && rawRecords.length > 0) {
-    log.warn('Structured parse produced no asset names — attempting HTML fallback');
+  const senateOnly = senateResult.records;
+  const senateEmpty = senateOnly.length > 0 && senateOnly.every((r) => !r.asset_name.trim());
+  if (senateEmpty) {
+    log.warn('Senate structured parse produced no asset names — attempting HTML fallback');
     try {
-      const htmlHits = rawRecords
+      const htmlHits = senateOnly
         .map((r) => r.raw_json)
         .filter((j): j is Record<string, unknown> => !!j['html'])
         .map((j) => j['html'] as string);
 
       if (htmlHits.length > 0) {
-        parsedRecords = parseHtml(htmlHits.join('\n'));
-        log.info(`HTML fallback produced ${parsedRecords.length} records`);
+        const fallback = parseHtml(htmlHits.join('\n'));
+        parsedRecords = [...fallback, ...houseResult.records];
+        log.info(`HTML fallback produced ${fallback.length} Senate records`);
       } else {
         log.warn('No html field in raw_json — cannot fall back to HTML parser');
       }

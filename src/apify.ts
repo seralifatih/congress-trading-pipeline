@@ -15,6 +15,8 @@ async function main(): Promise<void> {
       fromDate?: string;
       toDate?: string;
       debugPtrLimit?: number;
+      includeSenate?: boolean;
+      includeHouse?: boolean;
     }>()) ?? {};
 
     log.info('Actor input', input);
@@ -46,6 +48,8 @@ async function main(): Promise<void> {
     const stats = await runPipeline(store, {
       fromDate: input.fromDate,
       toDate: input.toDate,
+      includeSenate: input.includeSenate,
+      includeHouse: input.includeHouse,
     });
 
     log.info('Actor complete', stats);

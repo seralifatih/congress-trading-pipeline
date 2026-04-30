@@ -43,6 +43,18 @@
         "default": 0,
         "minimum": 0,
         "editor": "number"
+      },
+      "includeSenate": {
+        "title": "Include U.S. Senate filings",
+        "type": "boolean",
+        "description": "Fetch from efdsearch.senate.gov.",
+        "default": true
+      },
+      "includeHouse": {
+        "title": "Include U.S. House filings",
+        "type": "boolean",
+        "description": "Fetch from disclosures-clerk.house.gov (annual ZIP + per-PTR PDF parsing).",
+        "default": true
       }
     }
   },
