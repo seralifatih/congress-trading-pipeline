@@ -2,6 +2,7 @@ import axios, { AxiosError, AxiosInstance, InternalAxiosRequestConfig, AxiosResp
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { CookieJar } from 'tough-cookie';
 import { format, subDays } from 'date-fns';
+import * as cheerio from 'cheerio';
 import type { Agent } from 'https';
 import type { FetchResult, RawTransaction } from '../types/index.js';
 import { makeLogger } from '../utils/logger.js';
@@ -204,10 +205,9 @@ async function fetchDataPage(
   return res.data;
 }
 
-// ─── Row → RawTransaction mapping ─────────────────────────────────────────────
+// ─── Row → filing metadata ────────────────────────────────────────────────────
 // One row from DataTables = one PTR FILING (not one transaction).
-// Transactions are inside the PTR document itself. For MVP we record the
-// filing metadata; Phase 2 will fetch each PTR and parse line items.
+// We extract metadata + detail-page path, then fetch each PTR to get line items.
 
 const HREF_RE = /href=["']([^"']+)["']/;
 
@@ -215,44 +215,91 @@ function extractText(htmlOrText: string): string {
   return htmlOrText.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
 }
 
-function rowToRawTransaction(row: string[]): RawTransaction | null {
+interface FilingMeta {
+  politician: string;
+  filing_date: string;
+  report_path: string;
+  ptr_uuid: string;
+  office: string;
+}
+
+function rowToFilingMeta(row: string[]): FilingMeta | null {
   if (row.length < 5) return null;
 
   const [firstNameCell, lastNameCell, officeCell, reportCell, filedDateCell] = row;
   if (!firstNameCell || !lastNameCell || !reportCell || !filedDateCell) return null;
 
-  const firstName = extractText(firstNameCell);
-  const lastName = extractText(lastNameCell);
-  const politician = `${firstName} ${lastName}`.trim();
-
   const reportLinkMatch = reportCell.match(HREF_RE);
   const reportPath = reportLinkMatch?.[1] ?? '';
-  const reportLabel = extractText(reportCell);
-
-  // source_id = ptr UUID from URL path; falls back to politician+date+label
   const uuidMatch = reportPath.match(/\/ptr\/([a-f0-9-]+)/i);
-  const sourceId = uuidMatch?.[1] ?? `${politician}|${filedDateCell}|${reportLabel}`;
+  if (!uuidMatch) return null; // No PTR link — can't fetch transactions
 
   return {
-    politician,
-    transaction_date: '',                 // not in listing — comes from PTR detail page
+    politician: `${extractText(firstNameCell)} ${extractText(lastNameCell)}`.trim(),
     filing_date: extractText(filedDateCell),
-    ticker: '',
-    asset_name: reportLabel,              // listing only has report label; PTR detail has assets
-    asset_type: extractText(officeCell ?? ''),
-    type: '',
-    amount: '',
-    owner: '',
-    source_id: sourceId,
-    raw_json: {
-      first_name: firstName,
-      last_name: lastName,
-      office: extractText(officeCell ?? ''),
-      report_label: reportLabel,
-      report_path: reportPath,
-      filed_date: extractText(filedDateCell),
-    },
+    report_path: reportPath,
+    ptr_uuid: uuidMatch[1]!,
+    office: extractText(officeCell ?? ''),
   };
+}
+
+// ─── PTR detail page fetch + parse ────────────────────────────────────────────
+// HTML at /search/view/ptr/<uuid>/ contains a table with columns:
+//   #, Transaction Date, Owner, Ticker, Asset Name, Asset Type, Type, Amount, Comment
+// (column count and order can vary slightly — parse defensively)
+
+async function fetchPtrHtml(client: AxiosInstance, reportPath: string): Promise<string> {
+  const url = reportPath.startsWith('http') ? reportPath : `${BASE}${reportPath}`;
+  const res = await client.get<string>(url, {
+    headers: { Referer: SEARCH_URL, Accept: 'text/html,application/xhtml+xml' },
+    transformResponse: (v) => v, // keep raw string, axios tries to JSON-parse otherwise
+  });
+  if (typeof res.data !== 'string') {
+    throw new Error(`PTR detail returned non-string body (status ${res.status})`);
+  }
+  return res.data;
+}
+
+function parsePtrTransactions(html: string, meta: FilingMeta): RawTransaction[] {
+  const $ = cheerio.load(html);
+  const out: RawTransaction[] = [];
+
+  // The PTR page has one main table. Find rows with data cells.
+  // Header pattern: # | Transaction Date | Owner | Ticker | Asset Name | Asset Type | Type | Amount | Comment
+  const rows = $('table tbody tr');
+  if (rows.length === 0) {
+    log.warn(`PTR ${meta.ptr_uuid}: no table rows found`);
+    return out;
+  }
+
+  rows.each((idx, el) => {
+    const cells = $(el).find('td').toArray().map((c) => $(c).text().trim().replace(/\s+/g, ' '));
+    if (cells.length < 8) return; // skip non-data rows
+
+    const [, txDate, owner, ticker, assetName, assetType, txType, amount] = cells;
+    if (!assetName) return;
+
+    out.push({
+      politician: meta.politician,
+      transaction_date: txDate ?? '',
+      filing_date: meta.filing_date,
+      ticker: (ticker ?? '').trim(),
+      asset_name: assetName,
+      asset_type: assetType ?? '',
+      type: txType ?? '',
+      amount: amount ?? '',
+      owner: owner ?? '',
+      source_id: `${meta.ptr_uuid}|${idx}`,
+      raw_json: {
+        ptr_uuid: meta.ptr_uuid,
+        row_index: idx,
+        cells,
+        office: meta.office,
+      },
+    });
+  });
+
+  return out;
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -263,6 +310,61 @@ function isoToday(): string {
 
 function isoDefaultStart(): string {
   return format(subDays(new Date(), config.FETCH_DAYS_BACK), 'yyyy-MM-dd');
+}
+
+// ─── Per-PTR detail fetch with rate limiting ─────────────────────────────────
+
+const PTR_DELAY_MS = 1250; // open-source convention — be a polite citizen
+
+async function delay(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchAllFilings(
+  client: AxiosInstance,
+  csrf: string,
+  fromDate: string,
+  toDate: string,
+): Promise<{ filings: FilingMeta[]; total: number; partial: boolean; error?: string }> {
+  const filings: FilingMeta[] = [];
+  let total = 0;
+  let drawCounter = 1;
+
+  try {
+    const first = await withRetry(
+      () => fetchDataPage(client, csrf, 0, fromDate, toDate, drawCounter++),
+      3,
+      500,
+    );
+    total = first.recordsFiltered ?? first.recordsTotal ?? 0;
+    filings.push(...first.data.map(rowToFilingMeta).filter((f): f is FilingMeta => f !== null));
+    log.info(`Listing: ${total} filings reported`);
+  } catch (err) {
+    return { filings, total: 0, partial: true, error: toAxiosMessage(err) };
+  }
+
+  let offset = PAGE_SIZE;
+  while (offset < total) {
+    try {
+      const page = await withRetry(
+        () => fetchDataPage(client, csrf, offset, fromDate, toDate, drawCounter++),
+        3,
+        500,
+      );
+      if (page.data.length === 0) break;
+      filings.push(...page.data.map(rowToFilingMeta).filter((f): f is FilingMeta => f !== null));
+      offset += PAGE_SIZE;
+    } catch (err) {
+      return {
+        filings,
+        total,
+        partial: true,
+        error: `Listing pagination stopped at offset=${offset}: ${toAxiosMessage(err)}`,
+      };
+    }
+  }
+
+  return { filings, total, partial: false };
 }
 
 export async function fetchPage(
@@ -280,11 +382,23 @@ export async function fetchPage(
       500,
     );
 
-    const records = response.data
-      .map(rowToRawTransaction)
-      .filter((r): r is RawTransaction => r !== null);
+    const filings = response.data
+      .map(rowToFilingMeta)
+      .filter((f): f is FilingMeta => f !== null);
 
-    log.info(`Page offset=${offset}: ${records.length}/${response.data.length} rows mapped`);
+    const records: RawTransaction[] = [];
+    for (let i = 0; i < filings.length; i++) {
+      const meta = filings[i]!;
+      try {
+        const html = await fetchPtrHtml(client, meta.report_path);
+        records.push(...parsePtrTransactions(html, meta));
+      } catch (err) {
+        log.warn(`PTR ${meta.ptr_uuid} fetch failed: ${toAxiosMessage(err)}`);
+      }
+      if (i < filings.length - 1) await delay(PTR_DELAY_MS);
+    }
+
+    log.info(`Page offset=${offset}: ${filings.length} filings → ${records.length} transactions`);
     return { success: true, records };
   } catch (err) {
     const message = toAxiosMessage(err);
@@ -310,53 +424,55 @@ export async function fetchAll(
     return { success: false, records: [], error: `Handshake failed: ${message}` };
   }
 
-  let total: number;
-  let allRecords: RawTransaction[] = [];
-  let drawCounter = 1;
-
-  try {
-    const first = await withRetry(
-      () => fetchDataPage(client, csrf, 0, fromDate, toDate, drawCounter++),
-      3,
-      500,
-    );
-    total = first.recordsFiltered ?? first.recordsTotal ?? 0;
-    allRecords = first.data
-      .map(rowToRawTransaction)
-      .filter((r): r is RawTransaction => r !== null);
-    log.info(`Total records reported by API: ${total}`);
-  } catch (err) {
-    const message = toAxiosMessage(err);
-    log.error(`fetchAll first-page failed: ${message}`);
-    return { success: false, records: [], error: message };
+  // Phase 1: collect all filings via DataTables listing
+  const listing = await fetchAllFilings(client, csrf, fromDate, toDate);
+  if (listing.filings.length === 0) {
+    return {
+      success: !listing.partial,
+      records: [],
+      error: listing.error ?? 'No filings found',
+    };
   }
+  log.info(`Listing complete: ${listing.filings.length} PTR filings collected`);
 
-  let offset = PAGE_SIZE;
-  while (offset < total) {
+  // Phase 2: fetch each PTR detail page, parse transactions
+  const allRecords: RawTransaction[] = [];
+  let detailErrors = 0;
+
+  for (let i = 0; i < listing.filings.length; i++) {
+    const meta = listing.filings[i]!;
     try {
-      const page = await withRetry(
-        () => fetchDataPage(client, csrf, offset, fromDate, toDate, drawCounter++),
-        3,
+      const html = await withRetry(
+        () => fetchPtrHtml(client, meta.report_path),
+        2,
         500,
       );
-      if (page.data.length === 0) break;
-      const mapped = page.data
-        .map(rowToRawTransaction)
-        .filter((r): r is RawTransaction => r !== null);
-      allRecords.push(...mapped);
-      offset += PAGE_SIZE;
+      const txs = parsePtrTransactions(html, meta);
+      allRecords.push(...txs);
+      if ((i + 1) % 10 === 0 || i === listing.filings.length - 1) {
+        log.info(`Detail progress: ${i + 1}/${listing.filings.length} PTRs → ${allRecords.length} txs`);
+      }
     } catch (err) {
-      const message = toAxiosMessage(err);
-      log.warn(`Stopping pagination early at offset=${offset}: ${message}`);
-      return {
-        success: false,
-        records: allRecords,
-        error: `Partial fetch (${allRecords.length}/${total}): ${message}`,
-      };
+      detailErrors++;
+      log.warn(`PTR ${meta.ptr_uuid} (${meta.politician}) detail fetch failed: ${toAxiosMessage(err)}`);
     }
+    if (i < listing.filings.length - 1) await delay(PTR_DELAY_MS);
   }
 
-  log.info(`fetchAll complete: ${allRecords.length} records collected`);
+  log.info(
+    `fetchAll complete: ${listing.filings.length} filings → ${allRecords.length} transactions, ${detailErrors} detail errors`,
+  );
+
+  // Partial = listing was incomplete OR ≥25% of detail fetches failed
+  const partialDetail = detailErrors > listing.filings.length / 4;
+  if (listing.partial || partialDetail) {
+    return {
+      success: false,
+      records: allRecords,
+      error: listing.error ?? `${detailErrors}/${listing.filings.length} PTR detail fetches failed`,
+    };
+  }
+
   return { success: true, records: allRecords };
 }
 
