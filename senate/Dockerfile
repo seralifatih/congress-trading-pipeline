@@ -16,4 +16,4 @@ RUN npm run build
 # Prune devDependencies after build
 RUN npm prune --omit=dev
 
-CMD ["node", "dist/apifyHouse.js"]
+CMD ["node", "dist/apify.js"]

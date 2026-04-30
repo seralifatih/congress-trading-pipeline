@@ -1,15 +1,14 @@
 {
   "actorSpecification": 1,
-  "name": "congress-trading-pipeline",
-  "title": "Congress Trading Pipeline",
-  "description": "Fetches U.S. Senate Periodic Transaction Reports (PTRs) directly from efdsearch.senate.gov, normalizes them into a clean schema, and pushes them to a queryable dataset. Replaces QuiverQuant for congressional trading data.",
+  "name": "house-trading-pipeline",
+  "title": "U.S. House Trading Pipeline",
+  "description": "Fetches U.S. House Periodic Transaction Reports from the official disclosures-clerk.house.gov ZIP archive, parses the per-filing PDFs, and emits a clean transaction dataset. Public domain data, no third-party vendors.",
   "version": "0.1.0",
   "buildTag": "latest",
   "dockerfile": "../Dockerfile",
-  "dockerContextDir": "..",
   "input": {
     "schemaVersion": 1,
-    "title": "Congress Trading Pipeline Input",
+    "title": "House Trading Pipeline Input",
     "description": "Optional overrides for the pipeline run.",
     "type": "object",
     "properties": {
@@ -35,14 +34,6 @@
         "description": "Explicit end date. Defaults to today.",
         "editor": "textfield",
         "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
-      },
-      "debugPtrLimit": {
-        "title": "Debug: limit PTR detail fetches",
-        "type": "integer",
-        "description": "If > 0, fetch detail HTML for only the first N PTRs. Useful for diagnostics.",
-        "default": 0,
-        "minimum": 0,
-        "editor": "number"
       }
     }
   },

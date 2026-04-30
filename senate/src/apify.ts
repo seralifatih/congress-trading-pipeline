@@ -4,7 +4,7 @@ import { ApifyStore } from './store/apifyStore.js';
 import { makeLogger } from './utils/logger.js';
 import { toErrorMessage } from './utils/errors.js';
 
-const log = makeLogger('apify-house');
+const log = makeLogger('apify');
 
 async function main(): Promise<void> {
   await Actor.init();
@@ -14,21 +14,38 @@ async function main(): Promise<void> {
       fetchDaysBack?: number;
       fromDate?: string;
       toDate?: string;
+      debugPtrLimit?: number;
     }>()) ?? {};
 
     log.info('Actor input', input);
 
     if (input.fetchDaysBack) process.env['FETCH_DAYS_BACK'] = String(input.fetchDaysBack);
+    if (input.debugPtrLimit) process.env['DEBUG_PTR_LIMIT'] = String(input.debugPtrLimit);
 
-    // House data comes straight from disclosures-clerk.house.gov over plain HTTPS.
-    // No Akamai, no terms acceptance — proxy is optional. Skip it to save quota.
+    // Request proxy from the platform — gives a routable URL usable by axios.
+    // Pass a stable sessionId so all requests share the SAME residential exit IP.
+    // Django keeps prohibition_agreement state per-IP; rotating IPs invalidates
+    // it and PTR pages redirect to home.
+    const proxyConfig = await Actor.createProxyConfiguration({
+      groups: ['RESIDENTIAL'],
+    }).catch(() => null);
+
+    const sessionId = `senate_${Date.now()}`;
+    const proxyUrl = proxyConfig ? await proxyConfig.newUrl(sessionId) : undefined;
+    if (proxyUrl) {
+      log.info('Proxy acquired', {
+        url: proxyUrl.replace(/:[^:@]+@/, ':***@'),
+        sessionId,
+      });
+      process.env['APIFY_PROXY_URL'] = proxyUrl;
+    } else {
+      log.warn('No proxy available — requests will use direct connection');
+    }
 
     const store = ApifyStore.getInstance();
     const stats = await runPipeline(store, {
       fromDate: input.fromDate,
       toDate: input.toDate,
-      includeSenate: false,
-      includeHouse: true,
     });
 
     log.info('Actor complete', stats);
@@ -42,6 +59,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error('[apify-house] Fatal:', err);
+  console.error('[apify] Fatal:', err);
   process.exit(1);
 });
