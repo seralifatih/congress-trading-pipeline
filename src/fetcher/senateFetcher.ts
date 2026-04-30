@@ -261,19 +261,24 @@ function isHomePageRedirect(html: string): boolean {
 async function fetchPtrHtmlOnce(
   client: AxiosInstance,
   reportPath: string,
-): Promise<string> {
+): Promise<{ html: string; status: number; finalUrl: string }> {
   const url = reportPath.startsWith('http') ? reportPath : `${BASE}${reportPath}`;
   const res = await client.get<string>(url, {
     headers: {
       Referer: SEARCH_URL,
       Accept: 'text/html,application/xhtml+xml',
     },
-    transformResponse: (v) => v, // keep raw string, axios tries to JSON-parse otherwise
+    transformResponse: (v) => v,
+    maxRedirects: 5,
+    // Capture redirects explicitly — log them so we know what's happening
   });
   if (typeof res.data !== 'string') {
     throw new Error(`PTR detail returned non-string body (status ${res.status})`);
   }
-  return res.data;
+  // axios stores the final URL (after redirects) on res.request.res.responseUrl in Node
+  const reqAny = res.request as { res?: { responseUrl?: string } } | undefined;
+  const finalUrl = reqAny?.res?.responseUrl ?? url;
+  return { html: res.data, status: res.status, finalUrl };
 }
 
 /**
@@ -289,16 +294,30 @@ async function fetchPtrHtml(
   reportPath: string,
   csrf: string,
 ): Promise<{ html: string; csrf: string }> {
-  let html = await fetchPtrHtmlOnce(client, reportPath);
+  const requested = reportPath.startsWith('http') ? reportPath : `${BASE}${reportPath}`;
+  let result = await fetchPtrHtmlOnce(client, reportPath);
 
-  if (isHomePageRedirect(html)) {
-    log.warn(`PTR redirected to home — re-running handshake`);
+  // Detect redirect-to-home in two ways: final URL contains /home/ OR HTML body matches
+  const wasRedirected = result.finalUrl.includes('/search/home') || isHomePageRedirect(result.html);
+  if (wasRedirected) {
+    log.warn(
+      `PTR redirected — req=${requested} final=${result.finalUrl} status=${result.status}; re-handshake`,
+    );
     const newCsrf = await handshake(client, jar);
-    html = await fetchPtrHtmlOnce(client, reportPath);
-    return { html, csrf: newCsrf };
+    result = await fetchPtrHtmlOnce(client, reportPath);
+
+    if (result.finalUrl.includes('/search/home') || isHomePageRedirect(result.html)) {
+      log.warn(
+        `PTR still redirected after re-handshake — final=${result.finalUrl}. Cookies in jar:`,
+      );
+      const cookies = await jar.getCookies(BASE);
+      log.warn(`  ${cookies.map((c) => `${c.key}=${c.value.slice(0, 8)}...`).join('; ')}`);
+    }
+
+    return { html: result.html, csrf: newCsrf };
   }
 
-  return { html, csrf };
+  return { html: result.html, csrf };
 }
 
 function parsePtrTransactions(html: string, meta: FilingMeta): RawTransaction[] {
