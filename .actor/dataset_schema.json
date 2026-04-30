@@ -1,0 +1,161 @@
+{
+  "actorSpecification": 1,
+  "fields": {
+    "type": "object",
+    "required": [
+      "politician",
+      "transaction_date",
+      "filing_date",
+      "asset_name",
+      "asset_type",
+      "type",
+      "amount_min",
+      "owner",
+      "id"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "title": "ID",
+        "description": "Stable SHA-256 dedup key over (politician, transaction_date, asset_name, amount_min, amount_max).",
+        "example": "057cfd6485562a167c140ba950f5835cccf3bbb5fdaf55163f08c37c3cdcd372"
+      },
+      "politician": {
+        "type": "string",
+        "title": "Politician",
+        "description": "Filer name as it appears on the Senate disclosure.",
+        "example": "Tommy Tuberville"
+      },
+      "transaction_date": {
+        "type": "string",
+        "title": "Transaction date",
+        "description": "ISO date (YYYY-MM-DD) when the trade was executed.",
+        "example": "2026-04-15"
+      },
+      "filing_date": {
+        "type": "string",
+        "title": "Filing date",
+        "description": "ISO date (YYYY-MM-DD) when the PTR was filed with the Senate.",
+        "example": "2026-04-20"
+      },
+      "ticker": {
+        "type": ["string", "null"],
+        "title": "Ticker",
+        "description": "Stock ticker. Null for bonds, municipal securities, structured notes, and other non-equity instruments.",
+        "example": "NVDA"
+      },
+      "asset_name": {
+        "type": "string",
+        "title": "Asset name",
+        "description": "Full asset description as reported on the PTR.",
+        "example": "NVIDIA Corporation - Common Stock"
+      },
+      "asset_type": {
+        "type": "string",
+        "title": "Asset type",
+        "description": "Senate EFD asset classification.",
+        "example": "Stock"
+      },
+      "type": {
+        "type": "string",
+        "title": "Trade type",
+        "description": "Normalized to 'buy' (Purchase) or 'sell' (Sale Full / Sale Partial).",
+        "enum": ["buy", "sell"],
+        "example": "buy"
+      },
+      "amount_min": {
+        "type": "integer",
+        "title": "Amount lower bound",
+        "description": "Lower bound of the reported amount range, in USD.",
+        "example": 1001
+      },
+      "amount_max": {
+        "type": ["integer", "null"],
+        "title": "Amount upper bound",
+        "description": "Upper bound of the reported amount range, in USD. Null for unbounded 'Over $X' brackets.",
+        "example": 15000
+      },
+      "owner": {
+        "type": "string",
+        "title": "Owner",
+        "description": "Account owner classification per STOCK Act.",
+        "enum": ["self", "joint", "spouse", "child"],
+        "example": "self"
+      }
+    }
+  },
+  "views": {
+    "overview": {
+      "title": "Transaction overview",
+      "description": "Compact view — politician, ticker, type, amounts, dates.",
+      "transformation": {
+        "fields": [
+          "politician",
+          "transaction_date",
+          "filing_date",
+          "ticker",
+          "type",
+          "amount_min",
+          "amount_max",
+          "owner"
+        ]
+      },
+      "display": {
+        "component": "table",
+        "properties": {
+          "politician": { "label": "Politician", "format": "text" },
+          "transaction_date": { "label": "Trade date", "format": "date" },
+          "filing_date": { "label": "Filed", "format": "date" },
+          "ticker": { "label": "Ticker", "format": "text" },
+          "type": { "label": "Type", "format": "text" },
+          "amount_min": { "label": "Min $", "format": "number" },
+          "amount_max": { "label": "Max $", "format": "number" },
+          "owner": { "label": "Owner", "format": "text" }
+        }
+      }
+    },
+    "buys_only": {
+      "title": "Purchases only",
+      "description": "Filter to only buy-side transactions.",
+      "transformation": {
+        "fields": [
+          "politician",
+          "transaction_date",
+          "ticker",
+          "asset_name",
+          "amount_min",
+          "amount_max",
+          "owner"
+        ],
+        "filter": {
+          "type": "buy"
+        }
+      },
+      "display": {
+        "component": "table"
+      }
+    },
+    "full": {
+      "title": "Full record",
+      "description": "All fields including asset_name, asset_type, and id.",
+      "transformation": {
+        "fields": [
+          "id",
+          "politician",
+          "transaction_date",
+          "filing_date",
+          "ticker",
+          "asset_name",
+          "asset_type",
+          "type",
+          "amount_min",
+          "amount_max",
+          "owner"
+        ]
+      },
+      "display": {
+        "component": "table"
+      }
+    }
+  }
+}

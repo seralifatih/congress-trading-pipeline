@@ -1,0 +1,19 @@
+{
+  "actorOutputSchemaVersion": 1,
+  "title": "Congress Trading Pipeline output",
+  "description": "Normalized U.S. Senate PTR transaction records, one item per individual trade.",
+  "properties": {
+    "transactions": {
+      "type": "string",
+      "title": "Transactions",
+      "description": "All normalized trades from PTRs filed in the requested date window.",
+      "template": "{{links.apiDefaultDatasetUrl}}/items"
+    },
+    "runStats": {
+      "type": "string",
+      "title": "Run summary",
+      "description": "Pipeline run statistics: inserted, skipped, errors. Stored under OUTPUT key.",
+      "template": "{{links.apiDefaultKeyValueStoreUrl}}/records/OUTPUT"
+    }
+  }
+}

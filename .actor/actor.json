@@ -2,8 +2,8 @@
   "actorSpecification": 1,
   "name": "congress-trading-pipeline",
   "title": "Congress Trading Pipeline",
-  "description": "Fetches U.S. Senate PTR disclosures, normalizes them, and pushes to Apify Dataset.",
-  "version": "0.1",
+  "description": "Fetches U.S. Senate Periodic Transaction Reports (PTRs) directly from efdsearch.senate.gov, normalizes them into a clean schema, and pushes them to a queryable dataset. Replaces QuiverQuant for congressional trading data.",
+  "version": "0.1.0",
   "buildTag": "latest",
   "dockerfile": "../Dockerfile",
   "dockerContextDir": "..",
@@ -45,5 +45,9 @@
         "editor": "number"
       }
     }
-  }
+  },
+  "storages": {
+    "dataset": "./dataset_schema.json"
+  },
+  "output": "./output_schema.json"
 }
