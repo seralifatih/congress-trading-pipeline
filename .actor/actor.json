@@ -35,6 +35,14 @@
         "description": "Explicit end date. Defaults to today.",
         "editor": "textfield",
         "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+      },
+      "debugPtrLimit": {
+        "title": "Debug: limit PTR detail fetches",
+        "type": "integer",
+        "description": "If > 0, fetch detail HTML for only the first N PTRs. Useful for diagnostics.",
+        "default": 0,
+        "minimum": 0,
+        "editor": "number"
       }
     }
   }

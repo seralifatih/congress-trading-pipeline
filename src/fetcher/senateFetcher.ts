@@ -264,11 +264,19 @@ function parsePtrTransactions(html: string, meta: FilingMeta): RawTransaction[] 
   const $ = cheerio.load(html);
   const out: RawTransaction[] = [];
 
-  // The PTR page has one main table. Find rows with data cells.
-  // Header pattern: # | Transaction Date | Owner | Ticker | Asset Name | Asset Type | Type | Amount | Comment
-  const rows = $('table tbody tr');
+  // Try multiple selectors — Senate EFD layout has shifted over time
+  let rows = $('table tbody tr');
+  if (rows.length === 0) rows = $('table.table tr').filter((_, el) => $(el).find('td').length > 0);
+  if (rows.length === 0) rows = $('table tr').filter((_, el) => $(el).find('td').length > 0);
+
   if (rows.length === 0) {
-    log.warn(`PTR ${meta.ptr_uuid}: no table rows found`);
+    // Diagnostic: log title, first form, table count, and first 500 chars
+    const title = $('title').text().trim();
+    const tableCount = $('table').length;
+    const formAction = $('form').first().attr('action') ?? '(none)';
+    const snippet = html.slice(0, 600).replace(/\s+/g, ' ');
+    log.warn(`PTR ${meta.ptr_uuid}: no rows. title="${title}" tables=${tableCount} form="${formAction}"`);
+    log.warn(`PTR ${meta.ptr_uuid} html-head: ${snippet}`);
     return out;
   }
 
@@ -315,6 +323,10 @@ function isoDefaultStart(): string {
 // ─── Per-PTR detail fetch with rate limiting ─────────────────────────────────
 
 const PTR_DELAY_MS = 1250; // open-source convention — be a polite citizen
+// Optional debug cap — set DEBUG_PTR_LIMIT=N in env to fetch only N PTRs
+const DEBUG_PTR_LIMIT = process.env['DEBUG_PTR_LIMIT']
+  ? parseInt(process.env['DEBUG_PTR_LIMIT'], 10)
+  : 0;
 
 async function delay(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
@@ -439,8 +451,15 @@ export async function fetchAll(
   const allRecords: RawTransaction[] = [];
   let detailErrors = 0;
 
-  for (let i = 0; i < listing.filings.length; i++) {
-    const meta = listing.filings[i]!;
+  const filingsToFetch = DEBUG_PTR_LIMIT > 0
+    ? listing.filings.slice(0, DEBUG_PTR_LIMIT)
+    : listing.filings;
+  if (DEBUG_PTR_LIMIT > 0) {
+    log.warn(`DEBUG_PTR_LIMIT=${DEBUG_PTR_LIMIT} — fetching subset only`);
+  }
+
+  for (let i = 0; i < filingsToFetch.length; i++) {
+    const meta = filingsToFetch[i]!;
     try {
       const html = await withRetry(
         () => fetchPtrHtml(client, meta.report_path),
@@ -449,14 +468,14 @@ export async function fetchAll(
       );
       const txs = parsePtrTransactions(html, meta);
       allRecords.push(...txs);
-      if ((i + 1) % 10 === 0 || i === listing.filings.length - 1) {
-        log.info(`Detail progress: ${i + 1}/${listing.filings.length} PTRs → ${allRecords.length} txs`);
+      if ((i + 1) % 10 === 0 || i === filingsToFetch.length - 1) {
+        log.info(`Detail progress: ${i + 1}/${filingsToFetch.length} PTRs → ${allRecords.length} txs`);
       }
     } catch (err) {
       detailErrors++;
       log.warn(`PTR ${meta.ptr_uuid} (${meta.politician}) detail fetch failed: ${toAxiosMessage(err)}`);
     }
-    if (i < listing.filings.length - 1) await delay(PTR_DELAY_MS);
+    if (i < filingsToFetch.length - 1) await delay(PTR_DELAY_MS);
   }
 
   log.info(

@@ -14,11 +14,13 @@ async function main(): Promise<void> {
       fetchDaysBack?: number;
       fromDate?: string;
       toDate?: string;
+      debugPtrLimit?: number;
     }>()) ?? {};
 
     log.info('Actor input', input);
 
     if (input.fetchDaysBack) process.env['FETCH_DAYS_BACK'] = String(input.fetchDaysBack);
+    if (input.debugPtrLimit) process.env['DEBUG_PTR_LIMIT'] = String(input.debugPtrLimit);
 
     // Request proxy from the platform — gives a routable URL usable by axios
     const proxyConfig = await Actor.createProxyConfiguration({
