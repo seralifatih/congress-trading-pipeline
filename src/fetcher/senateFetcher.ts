@@ -172,6 +172,8 @@ async function fetchDataPage(
   draw: number,
 ): Promise<DataTablesResponse> {
   // Form-encoded body — Django expects application/x-www-form-urlencoded.
+  // csrfmiddlewaretoken MUST be in body (Django CSRF middleware checks both
+  // body and X-CSRFToken header).
   const body = new URLSearchParams({
     draw: String(draw),
     start: String(start),
@@ -185,6 +187,7 @@ async function fetchDataPage(
     office_id: '',
     first_name: '',
     last_name: '',
+    csrfmiddlewaretoken: csrf,
   });
 
   const res = await client.post<DataTablesResponse>(DATA_URL, body.toString(), {
@@ -248,16 +251,54 @@ function rowToFilingMeta(row: string[]): FilingMeta | null {
 //   #, Transaction Date, Owner, Ticker, Asset Name, Asset Type, Type, Amount, Comment
 // (column count and order can vary slightly — parse defensively)
 
-async function fetchPtrHtml(client: AxiosInstance, reportPath: string): Promise<string> {
+function isHomePageRedirect(html: string): boolean {
+  // PTR detail page redirects to /search/home/ when session has expired
+  // or terms haven't been accepted. Check for the form action + title.
+  return /<title>\s*eFD:\s*Home\s*<\/title>/i.test(html)
+      && /name=["']prohibition_agreement["']/i.test(html);
+}
+
+async function fetchPtrHtmlOnce(
+  client: AxiosInstance,
+  reportPath: string,
+): Promise<string> {
   const url = reportPath.startsWith('http') ? reportPath : `${BASE}${reportPath}`;
   const res = await client.get<string>(url, {
-    headers: { Referer: SEARCH_URL, Accept: 'text/html,application/xhtml+xml' },
+    headers: {
+      Referer: SEARCH_URL,
+      Accept: 'text/html,application/xhtml+xml',
+    },
     transformResponse: (v) => v, // keep raw string, axios tries to JSON-parse otherwise
   });
   if (typeof res.data !== 'string') {
     throw new Error(`PTR detail returned non-string body (status ${res.status})`);
   }
   return res.data;
+}
+
+/**
+ * Fetch a PTR detail page. If the response is a home-page redirect (session
+ * lost terms acceptance), re-run the handshake and retry once.
+ *
+ * Returns { html, csrf } where csrf is the (possibly refreshed) token —
+ * caller should propagate it for subsequent requests.
+ */
+async function fetchPtrHtml(
+  client: AxiosInstance,
+  jar: CookieJar,
+  reportPath: string,
+  csrf: string,
+): Promise<{ html: string; csrf: string }> {
+  let html = await fetchPtrHtmlOnce(client, reportPath);
+
+  if (isHomePageRedirect(html)) {
+    log.warn(`PTR redirected to home — re-running handshake`);
+    const newCsrf = await handshake(client, jar);
+    html = await fetchPtrHtmlOnce(client, reportPath);
+    return { html, csrf: newCsrf };
+  }
+
+  return { html, csrf };
 }
 
 function parsePtrTransactions(html: string, meta: FilingMeta): RawTransaction[] {
@@ -399,11 +440,13 @@ export async function fetchPage(
       .filter((f): f is FilingMeta => f !== null);
 
     const records: RawTransaction[] = [];
+    let activeCsrf = csrf;
     for (let i = 0; i < filings.length; i++) {
       const meta = filings[i]!;
       try {
-        const html = await fetchPtrHtml(client, meta.report_path);
-        records.push(...parsePtrTransactions(html, meta));
+        const result = await fetchPtrHtml(client, jar, meta.report_path, activeCsrf);
+        activeCsrf = result.csrf;
+        records.push(...parsePtrTransactions(result.html, meta));
       } catch (err) {
         log.warn(`PTR ${meta.ptr_uuid} fetch failed: ${toAxiosMessage(err)}`);
       }
@@ -458,15 +501,17 @@ export async function fetchAll(
     log.warn(`DEBUG_PTR_LIMIT=${DEBUG_PTR_LIMIT} — fetching subset only`);
   }
 
+  let activeCsrf = csrf;
   for (let i = 0; i < filingsToFetch.length; i++) {
     const meta = filingsToFetch[i]!;
     try {
-      const html = await withRetry(
-        () => fetchPtrHtml(client, meta.report_path),
+      const result = await withRetry(
+        () => fetchPtrHtml(client, jar, meta.report_path, activeCsrf),
         2,
         500,
       );
-      const txs = parsePtrTransactions(html, meta);
+      activeCsrf = result.csrf;
+      const txs = parsePtrTransactions(result.html, meta);
       allRecords.push(...txs);
       if ((i + 1) % 10 === 0 || i === filingsToFetch.length - 1) {
         log.info(`Detail progress: ${i + 1}/${filingsToFetch.length} PTRs → ${allRecords.length} txs`);
