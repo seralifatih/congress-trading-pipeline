@@ -1,25 +1,30 @@
 # U.S. House Trading Pipeline
 
-Nancy Pelosi files a purchase of $500k–$1M in Nvidia options.
+Nancy Pelosi files a $500k–$1M purchase of Nvidia options.
 Three days later it's on Reddit. Two weeks later it's on the news.
 
-This pipeline delivers that filing — and every other House PTR — as clean JSON, within 24 hours of the official disclosure.
-
-Fetches every U.S. House Periodic Transaction Report (PTR) directly from the official [Clerk of the House Financial Disclosure](https://disclosures-clerk.house.gov/FinancialDisclosure) ZIP archive, parses each filing's PDF, normalizes the rows, and pushes a clean transaction dataset to Apify.
+This pipeline delivers that filing — and every other House PTR —
+as clean JSON, within 24 hours of the official disclosure.
+No third-party aggregators. Direct from the Clerk of the House.
 
 Sister project to [senate-trading-pipeline](https://github.com/seralifatih/senate-trading-pipeline). Same target schema, separate fetcher + PDF parser. Run either or both.
 
 ## Who uses this
 
-- **Retail traders** tracking which Congress members are buying/selling before major legislation (defense stocks before NDAA votes, pharma before drug pricing bills, tech before antitrust hearings)
-- **Fintech developers** building portfolio tools, alert systems, or dashboards on top of STOCK Act data
-- **Journalists and researchers** monitoring congressional trading patterns — no account, no paywall, raw government data
-- **Quiver Quantitative / Capitol Trades users** who want the raw feed instead of a third-party UI
+- **Retail traders** tracking which Congress members are buying/selling
+  before major legislation — defense stocks before NDAA votes, pharma
+  before drug pricing bills, tech before antitrust hearings
+- **Fintech developers** building portfolio tools, alert systems, or
+  dashboards on top of STOCK Act data
+- **Journalists and researchers** monitoring congressional trading
+  patterns — no account, no paywall, raw government data
+- **Quiver Quantitative / Capitol Trades users** who want the raw feed
+  instead of a third-party UI
 
-**Why this instead of Quiver/Capitol Trades?**
-Both aggregate from the same source — the Clerk of the House. This pipeline pulls directly from the official ZIP archive. No middleman, no rate limits, no subscription. You own the data pipeline.
-
-**Public domain data. No third-party vendors. STOCK Act compliant.**
+**Why this instead of Quiver or Capitol Trades?**
+Both aggregate from the same source — the Clerk of the House. This
+pipeline pulls directly from the official ZIP archive. No middleman,
+no rate limits, no subscription. You own the pipeline.
 
 ---
 

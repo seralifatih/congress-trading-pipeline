@@ -17,7 +17,7 @@
     "express": "^4.19.2",
     "fast-xml-parser": "^5.7.2",
     "node-cron": "^3.0.3",
-    "pdf-parse": "^2.4.5",
+    "pdf-parse": "^1.1.4",
     "zod": "^3.23.8"
   },
   "devDependencies": {

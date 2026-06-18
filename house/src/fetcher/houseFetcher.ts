@@ -1,12 +1,7 @@
 import axios, { AxiosError } from 'axios';
 import AdmZip from 'adm-zip';
 import { XMLParser } from 'fast-xml-parser';
-import pdfParseNs from 'pdf-parse';
-
-// pdf-parse exports differently across versions; resolve callable form
-const pdfParse: (data: Buffer) => Promise<{ text: string }> =
-  (pdfParseNs as unknown as { default?: (b: Buffer) => Promise<{ text: string }> }).default ??
-  (pdfParseNs as unknown as (b: Buffer) => Promise<{ text: string }>);
+import pdfParse from 'pdf-parse';
 import { format, subDays, parse as parseDate, isValid } from 'date-fns';
 import type { FetchResult, RawTransaction } from '../types/index.js';
 import { makeLogger } from '../utils/logger.js';
@@ -169,8 +164,14 @@ export async function fetchAllHouse(
   let errors = 0;
   let scanned = 0;
 
-  for (let i = 0; i < filings.length; i++) {
-    const f = filings[i]!;
+  const debugLimit = process.env['DEBUG_PTR_LIMIT'] ? parseInt(process.env['DEBUG_PTR_LIMIT'], 10) : 0;
+  const filingsToFetch = debugLimit > 0 ? filings.slice(0, debugLimit) : filings;
+  if (debugLimit > 0) {
+    log.warn(`DEBUG_PTR_LIMIT=${debugLimit} — fetching subset only`);
+  }
+
+  for (let i = 0; i < filingsToFetch.length; i++) {
+    const f = filingsToFetch[i]!;
     try {
       const text = await withRetry(() => fetchPdfText(f.year, f.docId), 2, 500);
       const parsed = parseHousePtrText({
@@ -186,17 +187,17 @@ export async function fetchAllHouse(
       log.warn(`House PTR ${f.docId} (${f.member}) failed: ${err instanceof Error ? err.message : String(err)}`);
     }
 
-    if ((i + 1) % 25 === 0 || i === filings.length - 1) {
-      log.info(`House progress: ${i + 1}/${filings.length} PTRs → ${records.length} txs (${scanned} unparseable)`);
+    if ((i + 1) % 25 === 0 || i === filingsToFetch.length - 1) {
+      log.info(`House progress: ${i + 1}/${filingsToFetch.length} PTRs → ${records.length} txs (${scanned} unparseable)`);
     }
-    if (i < filings.length - 1) await delay(PDF_DELAY_MS);
+    if (i < filingsToFetch.length - 1) await delay(PDF_DELAY_MS);
   }
 
   log.info(
-    `fetchAllHouse complete: ${filings.length} filings → ${records.length} txs, ${scanned} unparseable, ${errors} errors`,
+    `fetchAllHouse complete: ${filingsToFetch.length} filings → ${records.length} txs, ${scanned} unparseable, ${errors} errors`,
   );
 
-  const partial = errors > filings.length / 4;
+  const partial = errors > filingsToFetch.length / 4;
   return {
     success: !partial,
     records,

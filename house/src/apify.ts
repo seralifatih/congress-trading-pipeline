@@ -14,11 +14,15 @@ async function main(): Promise<void> {
       fetchDaysBack?: number;
       fromDate?: string;
       toDate?: string;
+      debugPtrLimit?: number;
+      debugPdfText?: boolean;
     }>()) ?? {};
 
     log.info('Actor input', input);
 
     if (input.fetchDaysBack) process.env['FETCH_DAYS_BACK'] = String(input.fetchDaysBack);
+    if (input.debugPtrLimit) process.env['DEBUG_PTR_LIMIT'] = String(input.debugPtrLimit);
+    if (input.debugPdfText)  process.env['DEBUG_PDF_TEXT']  = '1';
 
     // House data comes straight from disclosures-clerk.house.gov over plain HTTPS.
     // No Akamai, no terms acceptance — proxy is optional. Skip it to save quota.

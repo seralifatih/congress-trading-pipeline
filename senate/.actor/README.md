@@ -1,23 +1,27 @@
 # Congress Trading Pipeline — API
 
-A Senate committee member files a purchase of $500k–$1M in a defense contractor — two weeks before a major contract announcement.
-Three days later it's on Reddit. Two weeks later it's on the news.
+A senator buys $250k in defense stock the week before a major
+procurement vote. The filing lands quietly on the Senate EFD system.
 
-This pipeline delivers that filing — and every other Senate PTR — as clean JSON, within 24 hours of the official disclosure.
-
-Ingests U.S. Senate Periodic Transaction Reports (PTRs) directly from the Senate Electronic Financial Disclosures office, normalizes them, and exposes a JSON API compatible with the existing frontend — replacing the QuiverQuant dependency entirely.
-
-No third-party data vendor required. No scraping. Source is public domain U.S. government disclosure data.
+This pipeline catches it — normalized, deduplicated, queryable JSON —
+within hours of the official disclosure. Public domain government data,
+no middleman.
 
 ## Who uses this
 
-- **Traders** following Senate insiders — Pelosi trades, Warren buys, defense committee members moving before contract announcements
-- **Algo traders** who want structured JSON they can pipe directly into a strategy without manual CSV parsing
-- **Data engineers** who need a clean, deduplicated Senate trading feed with stable record IDs for joins and incremental loads
-- **App developers** who want a drop-in API endpoint — run on Railway/Render, point your frontend at /api/transactions
+- **Traders** following Senate insiders — committee members moving
+  before contract announcements, votes, and regulatory decisions
+- **Algo traders** who want structured JSON they can pipe directly
+  into a strategy without manual CSV parsing
+- **Data engineers** who need a clean, deduplicated Senate trading feed
+  with stable record IDs for joins and incremental loads
+- **App developers** who want a drop-in REST API — run on Railway or
+  Render, point your frontend at /api/transactions
 
 **Why this instead of existing tools?**
-Senate EFD data is publicly available but awkward to consume. This pipeline normalizes the raw filings into a consistent schema with stable IDs, dedup, and a queryable REST API — so you build on top, not around.
+Senate EFD data is public but awkward to consume. This pipeline
+normalizes raw filings into a consistent schema with stable IDs,
+dedup, and a queryable REST API — so you build on top, not around.
 
 ---
 

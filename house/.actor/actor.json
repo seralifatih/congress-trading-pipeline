@@ -34,6 +34,20 @@
         "description": "Explicit end date. Defaults to today.",
         "editor": "textfield",
         "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+      },
+      "debugPtrLimit": {
+        "title": "Debug: limit PTR detail fetches",
+        "type": "integer",
+        "description": "If > 0, fetch only the first N PTRs.",
+        "default": 0,
+        "minimum": 0,
+        "editor": "number"
+      },
+      "debugPdfText": {
+        "title": "Debug: dump first 2000 chars of unmatched PDFs",
+        "type": "boolean",
+        "description": "Logs raw extracted text for any PDF where regex finds zero rows.",
+        "default": false
       }
     }
   },
