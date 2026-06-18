@@ -7,7 +7,7 @@ This pipeline delivers that filing — and every other House PTR — as clean JS
 
 Fetches every U.S. House Periodic Transaction Report (PTR) directly from the official [Clerk of the House Financial Disclosure](https://disclosures-clerk.house.gov/FinancialDisclosure) ZIP archive, parses each filing's PDF, normalizes the rows, and pushes a clean transaction dataset to Apify.
 
-Sister project to [senate-trading-pipeline](https://github.com/seralifatih/senate-trading-pipeline). Same target schema, separate fetcher + PDF parser. Run either or both.
+Sister actor to the [Senate Trading Pipeline](https://apify.com/seralifatih/congress-trading-pipeline) — same data philosophy and source approach, separate fetcher + PDF parser. Note: the two actors currently emit slightly different field names (House uses `type`/`amount_min`/`amount_max`; Senate uses `trade_type`/`amount_low`/`amount_high`). A unified cross-chamber schema is on the Phase 2 list. Run either or both.
 
 ## Who uses this
 
@@ -193,7 +193,7 @@ This pipeline does not scrape third-party aggregators. It pulls only from the of
 
 - **OCR fallback** for scanned PDFs (older paper filings)
 - **Ticker enrichment** for bond/muni rows where the source omits the ticker
-- **Cross-chamber merge actor** that consumes both Senate + House datasets and emits a single Congress-wide stream
+- **Cross-chamber merge actor** that consumes both Senate + House datasets and emits a single Congress-wide stream with a unified schema.
 
 ---
 

@@ -1,23 +1,29 @@
 # Congress Trading Pipeline — API
 
-A Senate committee member files a purchase of $500k–$1M in a defense contractor — two weeks before a major contract announcement.
-Three days later it's on Reddit. Two weeks later it's on the news.
+A senator buys $250k in defense stock the week before a major
+procurement vote. The filing lands quietly on the Senate EFD system.
 
-This pipeline delivers that filing — and every other Senate PTR — as clean JSON, within 24 hours of the official disclosure.
-
-Ingests U.S. Senate Periodic Transaction Reports (PTRs) directly from the Senate Electronic Financial Disclosures office, normalizes them, and exposes a JSON API compatible with the existing frontend — replacing the QuiverQuant dependency entirely.
-
-No third-party data vendor required. No scraping. Source is public domain U.S. government disclosure data.
+This pipeline catches it — normalized, deduplicated, queryable JSON —
+within hours of the official disclosure. Public domain government data,
+no middleman.
 
 ## Who uses this
 
-- **Traders** following Senate insiders — Pelosi trades, Warren buys, defense committee members moving before contract announcements
-- **Algo traders** who want structured JSON they can pipe directly into a strategy without manual CSV parsing
-- **Data engineers** who need a clean, deduplicated Senate trading feed with stable record IDs for joins and incremental loads
-- **App developers** who want a drop-in API endpoint — run on Railway/Render, point your frontend at /api/transactions
+- **Traders** following Senate insiders — committee members moving
+  before contract announcements, votes, and regulatory decisions
+- **Algo traders** who want structured JSON they can pipe directly
+  into a strategy without manual CSV parsing
+- **Data engineers** who need a clean, deduplicated Senate trading feed
+  with stable record IDs for joins and incremental loads
+- **App developers** who want a drop-in REST API — run on Railway or
+  Render, point your frontend at /api/transactions
 
 **Why this instead of existing tools?**
-Senate EFD data is publicly available but awkward to consume. This pipeline normalizes the raw filings into a consistent schema with stable IDs, dedup, and a queryable REST API — so you build on top, not around.
+Senate EFD data is public but awkward to consume. This pipeline
+normalizes raw filings into a consistent schema with stable IDs,
+dedup, and a queryable REST API — so you build on top, not around.
+
+Covers the Senate. For House of Representatives trades, see the sister actor: [U.S. House Trading Pipeline](https://apify.com/seralifatih/congress-trading-pipeline-1) — same data philosophy, separate fetcher. Run either or both.
 
 ---
 
@@ -293,7 +299,7 @@ Smoke test exits 0 on all pass, 1 on any failure.
 
 ## Phase 2 roadmap
 
-House of Representatives disclosures (efd.house.gov) use a different filing format and will be added after Senate coverage is stable. Planned additions: PDF parsing for older PTRs that lack structured data, ticker enrichment via OpenFIGI or a static CUSIP mapping table (resolving the `ticker: null` cases currently stored as-is), a scoring engine that ranks transactions by conviction signal (cluster detection, filing delay, filer track record), and Telegram/email alerts for high-score transactions. Multi-tenant auth (Supabase RLS + Paddle billing) is tracked separately under the SaaS roadmap.
+Planned additions: PDF parsing for older PTRs that lack structured data, ticker enrichment via OpenFIGI or a static CUSIP mapping table (resolving the `ticker: null` cases currently stored as-is), a scoring engine that ranks transactions by conviction signal (cluster detection, filing delay, filer track record), and Telegram/email alerts for high-score transactions. Multi-tenant auth (Supabase RLS + Paddle billing) is tracked separately under the SaaS roadmap.
 
 ---
 
