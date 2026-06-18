@@ -126,8 +126,8 @@ curl "https://api.apify.com/v2/datasets/<dataset-id>/items?token=YOUR_TOKEN&form
 If you'd rather run it yourself:
 
 ```bash
-git clone https://github.com/seralifatih/house-trading-pipeline
-cd house-trading-pipeline
+git clone https://github.com/seralifatih/congress-trading-pipeline
+cd congress-trading-pipeline/house
 npm install
 cp .env.example .env
 npm run build
