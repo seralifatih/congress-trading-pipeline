@@ -7,7 +7,9 @@ This pipeline delivers that filing — and every other House PTR —
 as clean JSON, within 24 hours of the official disclosure.
 No third-party aggregators. Direct from the Clerk of the House.
 
-Sister project to [senate-trading-pipeline](https://github.com/seralifatih/senate-trading-pipeline). Same target schema, separate fetcher + PDF parser. Run either or both.
+Part of a set:
+- **[Senate Trading Pipeline](https://github.com/seralifatih/senate-trading-pipeline)** — same target schema, separate fetcher + PDF parser. Run either or both.
+- **[Congress Lobbying × Trades Overlap](https://apify.com/seralifatih/congress-lobbying-trades-overlap)** — joins House + Senate trades with federal lobbying filings by member, quarter, and sector.
 
 ## Who uses this
 
@@ -198,7 +200,7 @@ This pipeline does not scrape third-party aggregators. It pulls only from the of
 
 - **OCR fallback** for scanned PDFs (older paper filings)
 - **Ticker enrichment** for bond/muni rows where the source omits the ticker
-- **Cross-chamber merge actor** that consumes both Senate + House datasets and emits a single Congress-wide stream
+- ~~Cross-chamber merge actor~~ → shipped as [Congress Lobbying × Trades Overlap](https://apify.com/seralifatih/congress-lobbying-trades-overlap), which consumes both Senate + House datasets and joins them with LDA lobbying filings
 
 ---
 

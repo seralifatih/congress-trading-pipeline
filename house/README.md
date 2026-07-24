@@ -1,25 +1,32 @@
 # U.S. House Trading Pipeline
 
-Nancy Pelosi files a purchase of $500k–$1M in Nvidia options.
+Nancy Pelosi files a $500k–$1M purchase of Nvidia options.
 Three days later it's on Reddit. Two weeks later it's on the news.
 
-This pipeline delivers that filing — and every other House PTR — as clean JSON, within 24 hours of the official disclosure.
+This pipeline delivers that filing — and every other House PTR —
+as clean JSON, within 24 hours of the official disclosure.
+No third-party aggregators. Direct from the Clerk of the House.
 
-Fetches every U.S. House Periodic Transaction Report (PTR) directly from the official [Clerk of the House Financial Disclosure](https://disclosures-clerk.house.gov/FinancialDisclosure) ZIP archive, parses each filing's PDF, normalizes the rows, and pushes a clean transaction dataset to Apify.
-
-Sister actor to the [Senate Trading Pipeline](https://apify.com/seralifatih/congress-trading-pipeline) — same data philosophy and source approach, separate fetcher + PDF parser. Note: the two actors currently emit slightly different field names (House uses `type`/`amount_min`/`amount_max`; Senate uses `trade_type`/`amount_low`/`amount_high`). A unified cross-chamber schema is on the Phase 2 list. Run either or both.
+Part of a set:
+- **[Senate Trading Pipeline](https://github.com/seralifatih/senate-trading-pipeline)** — same target schema, separate fetcher + PDF parser. Run either or both.
+- **[Congress Lobbying × Trades Overlap](https://apify.com/seralifatih/congress-lobbying-trades-overlap)** — joins House + Senate trades with federal lobbying filings by member, quarter, and sector.
 
 ## Who uses this
 
-- **Retail traders** tracking which Congress members are buying/selling before major legislation (defense stocks before NDAA votes, pharma before drug pricing bills, tech before antitrust hearings)
-- **Fintech developers** building portfolio tools, alert systems, or dashboards on top of STOCK Act data
-- **Journalists and researchers** monitoring congressional trading patterns — no account, no paywall, raw government data
-- **Quiver Quantitative / Capitol Trades users** who want the raw feed instead of a third-party UI
+- **Retail traders** tracking which Congress members are buying/selling
+  before major legislation — defense stocks before NDAA votes, pharma
+  before drug pricing bills, tech before antitrust hearings
+- **Fintech developers** building portfolio tools, alert systems, or
+  dashboards on top of STOCK Act data
+- **Journalists and researchers** monitoring congressional trading
+  patterns — no account, no paywall, raw government data
+- **Quiver Quantitative / Capitol Trades users** who want the raw feed
+  instead of a third-party UI
 
-**Why this instead of Quiver/Capitol Trades?**
-Both aggregate from the same source — the Clerk of the House. This pipeline pulls directly from the official ZIP archive. No middleman, no rate limits, no subscription. You own the data pipeline.
-
-**Public domain data. No third-party vendors. STOCK Act compliant.**
+**Why this instead of Quiver or Capitol Trades?**
+Both aggregate from the same source — the Clerk of the House. This
+pipeline pulls directly from the official ZIP archive. No middleman,
+no rate limits, no subscription. You own the pipeline.
 
 ---
 
@@ -193,7 +200,7 @@ This pipeline does not scrape third-party aggregators. It pulls only from the of
 
 - **OCR fallback** for scanned PDFs (older paper filings)
 - **Ticker enrichment** for bond/muni rows where the source omits the ticker
-- **Cross-chamber merge actor** that consumes both Senate + House datasets and emits a single Congress-wide stream with a unified schema.
+- ~~Cross-chamber merge actor~~ → shipped as [Congress Lobbying × Trades Overlap](https://apify.com/seralifatih/congress-lobbying-trades-overlap), which consumes both Senate + House datasets and joins them with LDA lobbying filings
 
 ---
 

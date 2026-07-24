@@ -1,308 +1,160 @@
-# Congress Trading Pipeline — API
+# U.S. Senate Trading Pipeline
 
-A senator buys $250k in defense stock the week before a major
-procurement vote. The filing lands quietly on the Senate EFD system.
+A senator files a $250k purchase of defense stock the week before a
+major procurement vote. The filing lands quietly on the Senate EFD
+system.
 
-This pipeline catches it — normalized, deduplicated, queryable JSON —
-within hours of the official disclosure. Public domain government data,
-no middleman.
+This actor delivers that filing — and every other Senate PTR — as
+clean, deduplicated JSON within hours of the official disclosure.
+No third-party aggregators. Direct from the Senate eFD system.
+
+Part of a set:
+- **[House Trading Pipeline](https://apify.com/seralifatih/congress-trading-pipeline-1)** — same target schema, House Clerk PTRs. Run either or both.
+- **[Congress Lobbying × Trades Overlap](https://apify.com/seralifatih/congress-lobbying-trades-overlap)** — joins House + Senate trades with federal lobbying filings by member, quarter, and sector.
 
 ## Who uses this
 
-- **Traders** following Senate insiders — committee members moving
-  before contract announcements, votes, and regulatory decisions
-- **Algo traders** who want structured JSON they can pipe directly
-  into a strategy without manual CSV parsing
-- **Data engineers** who need a clean, deduplicated Senate trading feed
-  with stable record IDs for joins and incremental loads
-- **App developers** who want a drop-in REST API — run on Railway or
-  Render, point your frontend at /api/transactions
+- **Retail traders** tracking which senators are buying/selling before
+  major legislation — defense before NDAA votes, pharma before drug
+  pricing bills, tech before antitrust hearings
+- **Fintech developers** building portfolio tools, alert systems, or
+  dashboards on top of STOCK Act data
+- **Journalists and researchers** monitoring congressional trading
+  patterns — no account, no paywall, raw government data
+- **Quiver Quantitative / Capitol Trades users** who want the raw feed
+  instead of a third-party UI
 
-**Why this instead of existing tools?**
-Senate EFD data is public but awkward to consume. This pipeline
-normalizes raw filings into a consistent schema with stable IDs,
-dedup, and a queryable REST API — so you build on top, not around.
-
-Covers the Senate. For House of Representatives trades, see the sister actor: [U.S. House Trading Pipeline](https://apify.com/seralifatih/congress-trading-pipeline-1) — same data philosophy, separate fetcher. Run either or both.
-
----
-
-## Prerequisites
-
-- Node.js 18+
-- No external services, databases, or API keys required for MVP
+**Why this instead of Quiver or Capitol Trades?**
+They aggregate from the same source — the Senate eFD system. This
+actor pulls directly from it. No middleman, no subscription. You own
+the feed.
 
 ---
 
-## Setup
+## What it produces
 
-```bash
-npm install
-cp .env.example .env   # edit as needed — all vars have defaults
-npm run dev
+One row per individual transaction reported in a Senate PTR:
+
+```json
+{
+  "id": "a3f9c1...",
+  "politician": "Jane Example",
+  "transaction_date": "2026-03-16",
+  "filing_date": "2026-03-20",
+  "ticker": "LMT",
+  "asset_name": "Lockheed Martin Corporation",
+  "asset_type": "Stock",
+  "type": "buy",
+  "amount_min": 250001,
+  "amount_max": 500000,
+  "owner": "self"
+}
 ```
 
-Server starts on `http://localhost:3001`.  
-On first boot the scheduler runs the pipeline immediately, then every 6 hours.
-
-### Environment variables
-
-| Variable | Default | Description |
+| Field | Type | Notes |
 |---|---|---|
-| `PORT` | `3001` | HTTP listen port |
-| `DB_PATH` | `./data/pipeline.db` | SQLite file path (created automatically) |
-| `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
-| `NODE_ENV` | `development` | Set to `production` for JSON-lines log output |
-| `CRON_SCHEDULE` | `0 */6 * * *` | node-cron schedule expression |
-| `FETCH_DAYS_BACK` | `90` | Rolling window of PTRs to fetch |
-| `CRON_SECRET` | *(empty)* | Shared secret for `/api/cron` and `/api/sync-committees` |
-| `FRONTEND_ORIGIN` | `http://localhost:3000` | Allowed CORS origin when running standalone |
-| `LAST_RUN_PATH` | `./data/last_run.json` | Persisted last-run stats file |
+| `id` | `string` | SHA-256 of the natural key (`politician\|date\|asset\|amount`) — stable dedup key |
+| `politician` | `string` | Filer name as it appears on the PTR |
+| `transaction_date` | `YYYY-MM-DD` | Trade execution date |
+| `filing_date` | `YYYY-MM-DD` | Date the PTR was submitted |
+| `ticker` | `string \| null` | `null` for bonds, municipals, structured notes |
+| `asset_name` | `string` | Full asset description |
+| `asset_type` | `string` | `Stock`, `Stock Option`, `Mutual Fund`, `Corporate Bond`, etc. |
+| `type` | `'buy' \| 'sell'` | Normalized from source purchase/sale codes |
+| `amount_min` | `integer` | Lower bound of reported amount range, USD |
+| `amount_max` | `integer \| null` | Upper bound. `null` for unbounded "Over $X" disclosures |
+| `owner` | `'self' \| 'joint' \| 'spouse' \| 'child'` | Account owner per STOCK Act categories |
+
+Same schema as the House actor — records from both merge cleanly on
+field names and dedup semantics.
 
 ---
 
-## Pipeline architecture
+## How it works
 
 ```
-┌──────────┐   ┌──────────┐   ┌─────────────┐   ┌────────┐   ┌────────┐
-│  Fetch   │──▶│  Parse   │──▶│  Transform  │──▶│  Dedup │──▶│ Store  │
-│          │   │          │   │             │   │        │   │        │
-│ Senate   │   │ JSON     │   │ type        │   │ key:   │   │ SQLite │
-│ EFD API  │   │ primary  │   │ amount      │   │ name + │   │ INSERT │
-│ GET      │   │          │   │ dates       │   │ date + │   │ OR     │
-│ 100/page │   │ HTML     │   │ owner       │   │ asset +│   │ IGNORE │
-│          │   │ fallback │   │ ticker      │   │ amount │   │        │
-└──────────┘   └──────────┘   └─────────────┘   └────────┘   └────────┘
-                                                                   │
-                                                                   ▼
-                                                           ┌──────────────┐
-                                                           │  Express API │
-                                                           │  :3001       │
-                                                           └──────────────┘
+   Search fetch        Parse              Transform          Dedup         Store
+┌────────────────┐  ┌──────────────┐  ┌───────────────┐  ┌──────────┐  ┌──────────┐
+│ Senate EFD     │─▶│ JSON primary │─▶│ type, amount, │─▶│ SHA-256  │─▶│ Apify    │
+│ search-index   │  │ HTML         │  │ dates, owner, │  │ natural  │  │ Dataset  │
+│ 100/page loop  │  │ fallback     │  │ ticker        │  │ key      │  │          │
+└────────────────┘  └──────────────┘  └───────────────┘  └──────────┘  └──────────┘
 ```
 
-**Source endpoint:** `GET https://efts.senate.gov/LATEST/search-index`  
-**Pagination:** 100 records/page, loops until `hits.total` exhausted  
-**Fallback:** if JSON parse yields empty `asset_name` on all rows, re-parses raw HTML  
-**Retry:** 3 attempts with exponential backoff + ±25% jitter on all HTTP calls
+**1. Fetch.** Pages through the Senate eFD search index
+(`efts.senate.gov`), 100 records per page, until the result set is
+exhausted for the configured date window.
+
+**2. Parse.** JSON response is primary. If a page yields empty asset
+names across all rows (a known eFD quirk), the raw HTML is re-parsed
+as fallback.
+
+**3. Normalize.** Source purchase/sale codes map to `buy`/`sell`;
+amount ranges, dates, and owner categories map to the canonical
+schema shared with the House actor.
+
+**4. Dedup + push.** The natural key is hashed to a stable ID;
+duplicates across overlapping runs are dropped; records land in the
+default Apify dataset.
+
+All HTTP calls retry 3 times with exponential backoff and ±25% jitter.
 
 ---
 
-## API reference
+## Input
 
-### `GET /health`
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `fetchDaysBack` | `integer` | `90` | Rolling window of PTRs to fetch (1–365) |
+| `fromDate` | `string` (YYYY-MM-DD) | — | Explicit start date. Overrides `fetchDaysBack` |
+| `toDate` | `string` (YYYY-MM-DD) | today | Explicit end date |
+
+---
+
+## How to use
+
+**Apify Console (no code):** set your date window, run. Results land
+in the dataset; export as JSON, CSV, or Excel.
+
+**API:**
 
 ```bash
-curl http://localhost:3001/health
+# Trigger a run
+curl -X POST "https://api.apify.com/v2/acts/seralifatih~SENATE-ACTOR-SLUG/runs?token=YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "fetchDaysBack": 30 }'
+
+# Read the dataset
+curl "https://api.apify.com/v2/datasets/<dataset-id>/items?token=YOUR_TOKEN&format=json"
 ```
 
-```json
-{
-  "status": "ok",
-  "db_count": 847,
-  "last_run": "2026-04-29T14:23:00.000Z"
-}
-```
+**Scheduled:** senators must disclose within 45 days of a trade, and
+filings arrive continuously. A daily or every-6-hours schedule keeps
+the feed current.
 
 ---
 
-### `GET /api/refresh`
+## Self-hosting
 
-Returns timestamp of most recently stored record. Called by the frontend on every page mount.
-
-```bash
-curl http://localhost:3001/api/refresh
-```
-
-```json
-{ "lastUpdated": "2026-04-29T14:23:00.000Z" }
-```
-
-`lastUpdated` is `null` if no records exist yet.
-
----
-
-### `POST /api/refresh`
-
-Triggers a full pipeline run. Called when the user clicks "Refresh Data" in the frontend.
-
-```bash
-curl -X POST http://localhost:3001/api/refresh
-```
-
-```json
-{ "ok": true, "signals": 14, "lastUpdated": "2026-04-29T14:23:00.000Z" }
-```
-
-On failure:
-
-```json
-{ "ok": false, "error": "Fetch failed: HTTP 503 Service Unavailable" }
-```
-
----
-
-### `GET /api/cron`
-
-Same pipeline run as `POST /api/refresh`, protected by `CRON_SECRET`. Called by an external scheduler (Cloudflare Worker, cron job, etc.).
-
-```bash
-curl -H "x-cron-secret: your-secret" http://localhost:3001/api/cron
-# or
-curl "http://localhost:3001/api/cron?secret=your-secret"
-```
-
-```json
-{
-  "ok": true,
-  "summary": {
-    "ingested": 340,
-    "newTrades": 14,
-    "signalsGenerated": 14,
-    "topScore": null,
-    "topScoreTicker": null,
-    "runAt": "2026-04-29T14:23:00.000Z"
-  }
-}
-```
-
-Returns `401` if secret is missing or wrong.
-
----
-
-### `GET /api/sync-committees`
-
-Syncs congressional committee membership. Protected by `CRON_SECRET`. Run once on setup, then weekly.
-
-```bash
-curl -H "x-cron-secret: your-secret" http://localhost:3001/api/sync-committees
-```
-
-```json
-{ "ok": true, "synced": 0 }
-```
-
----
-
-### `GET /api/transactions`
-
-Queryable read endpoint. Returns transactions serialized to match the frontend `Signal` field names.
-
-```bash
-# All recent transactions (default limit 500)
-curl http://localhost:3001/api/transactions
-
-# Filter by ticker
-curl "http://localhost:3001/api/transactions?ticker=AAPL"
-
-# Filter by politician (LIKE match, case-insensitive)
-curl "http://localhost:3001/api/transactions?politician=Pelosi"
-
-# Date range
-curl "http://localhost:3001/api/transactions?date_from=2026-04-01&date_to=2026-04-30"
-
-# Type + owner + pagination
-curl "http://localhost:3001/api/transactions?type=buy&owner=joint&limit=50&offset=0"
-```
-
-```json
-{
-  "count": 2,
-  "data": [
-    {
-      "id": "a3f...c1",
-      "filer_name": "Nancy Pelosi",
-      "filer_type": "congress",
-      "trade_type": "purchase",
-      "ticker": "NVDA",
-      "asset_name": "NVIDIA Corporation",
-      "asset_type": "Stock",
-      "amount_low": 1000001,
-      "amount_high": 5000000,
-      "amount_midpoint": 3000000,
-      "trade_date": "2026-04-29",
-      "filing_date": "2026-04-29",
-      "owner": "joint",
-      "is_active": true
-    }
-  ]
-}
-```
-
-**Query parameters:**
-
-| Param | Type | Description |
-|---|---|---|
-| `politician` | string | Substring match (LIKE) |
-| `ticker` | string | Exact match, auto-uppercased |
-| `date_from` | YYYY-MM-DD | Inclusive lower bound on `transaction_date` |
-| `date_to` | YYYY-MM-DD | Inclusive upper bound on `transaction_date` |
-| `type` | `buy` \| `sell` | Exact match |
-| `owner` | `self` \| `joint` \| `spouse` \| `child` | Exact match |
-| `limit` | integer 1–1000 | Default 500 |
-| `offset` | integer ≥ 0 | Default 0 |
-
-Invalid params return `400`:
-
-```json
-{ "error": { "date_from": ["Must be YYYY-MM-DD"] } }
-```
-
----
-
-### `GET /api/debug`
-
-Dev diagnostics. No auth. Returns DB count and 2 sample records.
-
-```bash
-curl http://localhost:3001/api/debug
-```
-
----
-
-## Cron schedule
-
-Default: `0 */6 * * *` (every 6 hours).
-
-Change via `CRON_SCHEDULE` env var — any valid [node-cron](https://github.com/node-cron/node-cron) expression.
-
-```bash
-CRON_SCHEDULE="0 */2 * * *" npm run dev   # every 2 hours
-CRON_SCHEDULE="0 8 * * *" npm run dev     # once daily at 08:00
-```
-
-Last run stats (timestamp, inserted, skipped, errors) are persisted to `./data/last_run.json` after each run.
-
----
-
-## Seeding and smoke test
-
-Load 20 realistic fake records covering edge cases (null tickers, spouse/child owners, large amounts, same-day multi-trades, clusters):
-
-```bash
-npm run seed
-```
-
-Verify the running server responds correctly:
-
-```bash
-# Terminal 1
-npm run dev
-
-# Terminal 2
-npm run smoke
-```
-
-Smoke test exits 0 on all pass, 1 on any failure.
-
----
-
-## Phase 2 roadmap
-
-Planned additions: PDF parsing for older PTRs that lack structured data, ticker enrichment via OpenFIGI or a static CUSIP mapping table (resolving the `ticker: null` cases currently stored as-is), a scoring engine that ranks transactions by conviction signal (cluster detection, filing delay, filer track record), and Telegram/email alerts for high-score transactions. Multi-tenant auth (Supabase RLS + Paddle billing) is tracked separately under the SaaS roadmap.
+The pipeline also runs standalone as an Express API with SQLite
+storage, a cron scheduler, and queryable REST endpoints — see the
+[GitHub repository](https://github.com/seralifatih/senate-trading-pipeline)
+for the self-hosted setup.
 
 ---
 
 ## Data source
 
-All data is sourced from the [U.S. Senate Electronic Financial Disclosures](https://efts.senate.gov) system — a public government database. Senate PTR filings are required under the STOCK Act and are public domain. This pipeline does not scrape third-party aggregators.
+[U.S. Senate Electronic Financial Disclosures (eFD)](https://efts.senate.gov)
+— a public government database. Senate PTR filings are required under
+the [STOCK Act of 2012](https://en.wikipedia.org/wiki/STOCK_Act) and
+are public domain.
+
+This actor does not scrape third-party aggregators. It pulls only
+from the official source.
+
+---
+
+## License
+
+MIT. Use the actor or the source however you want.
