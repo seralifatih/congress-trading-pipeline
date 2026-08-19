@@ -1,0 +1,402 @@
+# Crosswalk: LDA issue codes → sector, tickers → sector.
+# (Committee → sector lives in data/committee_jurisdictions.yaml; the
+# crosswalk loader reads both and validates them against the same
+# sector vocabulary.)
+#
+# THIS FILE IS THE CORE ASSET. If it is wrong the whole product is wrong.
+# See CLAUDE.md "The join".
+#
+# Schema:
+#   sectors:        canonical vocabulary. Every sector referenced anywhere
+#                   (here or in committee_jurisdictions.yaml) must be listed.
+#   issue_codes:    CODE: {name: ..., sectors: {sector: confidence, ...}}
+#                   `sectors: {}` means "intentionally maps to no sector"
+#                   (e.g. REL) — distinct from a code missing entirely,
+#                   which the resolver reports as unmapped.
+#   tickers:
+#     overrides:    TICKER: {sector: confidence, ...} — checked first.
+#     gics:         GICS sector name (snake_case) → {sector: confidence}.
+#                   Fallback when no override exists and the caller knows
+#                   the ticker's GICS sector.
+#
+# confidence: high / medium / low. Rule ids are derived, not hand-written:
+#   ic:CODE->sector   tk:TICKER->sector   gics:key->sector   com:ID->sector
+# Output rows expose these so users can audit which row fired.
+#
+# Neutral language only — mappings describe subject-matter relevance,
+# not conduct.
+
+version: 1
+
+sectors:
+  - aerospace
+  - agriculture
+  - antitrust
+  - automotive
+  - aviation
+  - banking
+  - chemicals
+  - construction
+  - consumer_protection
+  - cybersecurity
+  - defense
+  - education
+  - energy
+  - environment
+  - financials
+  - food
+  - gaming
+  - government_funding
+  - government_operations
+  - healthcare
+  - hospitality
+  - immigration
+  - insurance
+  - intellectual_property
+  - intelligence
+  - labor
+  - legal
+  - manufacturing
+  - maritime
+  - media_entertainment
+  - mining
+  - pharma
+  - postal
+  - railroads
+  - real_estate
+  - retail
+  - small_business
+  - tax
+  - technology
+  - telecom
+  - tobacco_alcohol
+  - trade
+  - transportation
+  - utilities
+  - veterans
+
+# All 79 LDA general issue area codes, per
+# lda.gov/api/v1/constants/filing/lobbyingactivityissues/ (2026-07).
+issue_codes:
+  ACC:
+    name: Accounting
+    sectors: {financials: medium}
+  ADV:
+    name: Advertising
+    sectors: {media_entertainment: medium, technology: low}
+  AER:
+    name: Aerospace
+    sectors: {aerospace: high, defense: medium}
+  AGR:
+    name: Agriculture
+    sectors: {agriculture: high, food: medium}
+  ALC:
+    name: Alcohol and Drug Abuse
+    sectors: {healthcare: medium, tobacco_alcohol: medium}
+  ANI:
+    name: Animals
+    sectors: {agriculture: medium, pharma: low}
+  APP:
+    name: Apparel/Clothing Industry/Textiles
+    sectors: {retail: high, manufacturing: medium}
+  ART:
+    name: Arts/Entertainment
+    sectors: {media_entertainment: high}
+  AUT:
+    name: Automotive Industry
+    sectors: {automotive: high, manufacturing: medium}
+  AVI:
+    name: Aviation/Airlines/Airports
+    sectors: {aviation: high, aerospace: medium}
+  BAN:
+    name: Banking
+    sectors: {banking: high, financials: high}
+  BNK:
+    name: Bankruptcy
+    sectors: {legal: medium, financials: medium}
+  BEV:
+    name: Beverage Industry
+    sectors: {food: high, tobacco_alcohol: medium}
+  BUD:
+    name: Budget/Appropriations
+    sectors: {government_funding: high}
+  CIV:
+    name: Civil Rights/Civil Liberties
+    sectors: {legal: medium}
+  CHM:
+    name: Chemicals/Chemical Industry
+    sectors: {chemicals: high}
+  CAW:
+    name: Clean Air and Water (quality)
+    sectors: {environment: high, utilities: medium}
+  CDT:
+    name: Commodities (big ticket)
+    sectors: {financials: medium, agriculture: low}
+  COM:
+    name: Communications/Broadcasting/Radio/TV
+    sectors: {media_entertainment: high, telecom: high}
+  CPI:
+    name: Computer Industry
+    sectors: {technology: high}
+  CON:
+    name: Constitution
+    sectors: {legal: medium}
+  CSP:
+    name: Consumer Issues/Safety/Products
+    sectors: {consumer_protection: high, retail: low}
+  CPT:
+    name: Copyright/Patent/Trademark
+    sectors: {intellectual_property: high, technology: medium, media_entertainment: medium}
+  DEF:
+    name: Defense
+    sectors: {defense: high, aerospace: medium}
+  DIS:
+    name: Disaster Planning/Emergencies
+    sectors: {government_operations: medium, insurance: low}
+  DOC:
+    name: District of Columbia
+    sectors: {government_operations: high}
+  ECN:
+    name: Economics/Economic Development
+    sectors: {financials: medium, government_funding: low}
+  EDU:
+    name: Education
+    sectors: {education: high}
+  ENG:
+    name: Energy/Nuclear
+    sectors: {energy: high, utilities: medium}
+  ENV:
+    name: Environment/Superfund
+    sectors: {environment: high}
+  FAM:
+    name: Family issues/Abortion/Adoption
+    sectors: {healthcare: low, legal: low}
+  FIN:
+    name: Financial Institutions/Investments/Securities
+    sectors: {financials: high, banking: high}
+  FIR:
+    name: Firearms/Guns/Ammunition
+    sectors: {manufacturing: medium, retail: low}
+  FOO:
+    name: Food Industry (safety, labeling, etc.)
+    sectors: {food: high, agriculture: medium}
+  FOR:
+    name: Foreign Relations
+    sectors: {defense: medium, trade: medium}
+  FUE:
+    name: Fuel/Gas/Oil
+    sectors: {energy: high}
+  GAM:
+    name: Gaming/Gambling/Casino
+    sectors: {gaming: high, hospitality: medium}
+  GOV:
+    name: Government Issues
+    sectors: {government_operations: high}
+  HCR:
+    name: Health Issues
+    sectors: {healthcare: high, pharma: medium}
+  HOM:
+    name: Homeland Security
+    sectors: {defense: medium, cybersecurity: medium}
+  HOU:
+    name: Housing
+    sectors: {real_estate: high, construction: medium}
+  IMM:
+    name: Immigration
+    sectors: {immigration: high}
+  IND:
+    name: Indian/Native American Affairs
+    sectors: {government_operations: medium, gaming: low}
+  INS:
+    name: Insurance
+    sectors: {insurance: high, financials: medium}
+  INT:
+    name: Intelligence
+    sectors: {intelligence: high, defense: medium, cybersecurity: medium}
+  LBR:
+    name: Labor Issues/Antitrust/Workplace
+    sectors: {labor: high, antitrust: medium}
+  LAW:
+    name: Law Enforcement/Crime/Criminal Justice
+    sectors: {legal: high}
+  MAN:
+    name: Manufacturing
+    sectors: {manufacturing: high}
+  MAR:
+    name: Marine/Maritime/Boating/Fisheries
+    sectors: {maritime: high, transportation: medium}
+  MIA:
+    name: Media (information/publishing)
+    sectors: {media_entertainment: high}
+  MED:
+    name: Medical/Disease Research/Clinical Labs
+    sectors: {healthcare: high, pharma: high}
+  MMM:
+    name: Medicare/Medicaid
+    sectors: {healthcare: high, insurance: medium}
+  MON:
+    name: Minting/Money/Gold Standard
+    sectors: {financials: medium}
+  NAT:
+    name: Natural Resources
+    sectors: {mining: medium, environment: medium, energy: medium}
+  PHA:
+    name: Pharmacy
+    sectors: {pharma: high, healthcare: medium}
+  POS:
+    name: Postal
+    sectors: {postal: high, transportation: low}
+  RRR:
+    name: Railroads
+    sectors: {railroads: high, transportation: medium}
+  RES:
+    name: Real Estate/Land Use/Conservation
+    sectors: {real_estate: high, construction: medium}
+  REL:
+    name: Religion
+    sectors: {}
+  RET:
+    name: Retirement
+    sectors: {financials: high, insurance: medium, labor: medium}
+  ROD:
+    name: Roads/Highway
+    sectors: {construction: high, transportation: high}
+  SCI:
+    name: Science/Technology
+    sectors: {technology: high}
+  SMB:
+    name: Small Business
+    sectors: {small_business: high}
+  SPO:
+    name: Sports/Athletics
+    sectors: {media_entertainment: medium, gaming: low}
+  TAR:
+    name: Tariff (miscellaneous tariff bills)
+    sectors: {trade: high}
+  TAX:
+    name: Taxation/Internal Revenue Code
+    sectors: {tax: high}
+  TEC:
+    name: Telecommunications
+    sectors: {telecom: high, technology: medium}
+  TOB:
+    name: Tobacco
+    sectors: {tobacco_alcohol: high}
+  TOR:
+    name: Torts
+    sectors: {legal: high, insurance: low}
+  TRD:
+    name: Trade (domestic/foreign)
+    sectors: {trade: high}
+  TRA:
+    name: Transportation
+    sectors: {transportation: high}
+  TOU:
+    name: Travel/Tourism
+    sectors: {hospitality: high, aviation: medium}
+  TRU:
+    name: Trucking/Shipping
+    sectors: {transportation: high, maritime: low}
+  URB:
+    name: Urban Development/Municipalities
+    sectors: {real_estate: medium, construction: medium}
+  UNM:
+    name: Unemployment
+    sectors: {labor: high}
+  UTI:
+    name: Utilities
+    sectors: {utilities: high, energy: medium}
+  VET:
+    name: Veterans
+    sectors: {veterans: high, healthcare: medium}
+  WAS:
+    name: Waste (hazardous/solid/interstate/nuclear)
+    sectors: {environment: high, utilities: medium}
+  WEL:
+    name: Welfare
+    sectors: {government_operations: medium, healthcare: low}
+
+tickers:
+  # Explicit per-ticker rules. Checked before the GICS fallback.
+  # Seeded with tickers that appear frequently in PTR filings — extend
+  # freely; this list is expected to grow by hand.
+  overrides:
+    AAPL: {technology: high}
+    ABBV: {pharma: high, healthcare: medium}
+    AMD: {technology: high}
+    AMT: {real_estate: high, telecom: medium}
+    AMZN: {retail: high, technology: high}
+    AVGO: {technology: high}
+    BA: {aerospace: high, defense: medium}
+    BAC: {banking: high, financials: high}
+    C: {banking: high, financials: high}
+    CAT: {manufacturing: high, construction: medium}
+    COP: {energy: high}
+    COST: {retail: high, food: medium}
+    CRM: {technology: high}
+    CSX: {railroads: high, transportation: medium}
+    CVS: {healthcare: high, retail: medium, pharma: medium}
+    CVX: {energy: high}
+    DE: {manufacturing: high, agriculture: medium}
+    DIS: {media_entertainment: high}
+    DUK: {utilities: high, energy: medium}
+    FDX: {transportation: high}
+    GD: {defense: high, aerospace: medium}
+    GE: {manufacturing: high, aerospace: medium}
+    GOOG: {technology: high, media_entertainment: medium}
+    GOOGL: {technology: high, media_entertainment: medium}
+    GS: {banking: high, financials: high}
+    HD: {retail: high, construction: medium}
+    HON: {manufacturing: high, aerospace: medium}
+    INTC: {technology: high}
+    JNJ: {pharma: high, healthcare: high}
+    JPM: {banking: high, financials: high}
+    LHX: {defense: high, aerospace: medium}
+    LLY: {pharma: high, healthcare: medium}
+    LMT: {defense: high, aerospace: high}
+    MA: {financials: high, technology: low}
+    MCD: {food: high, hospitality: medium}
+    META: {technology: high, media_entertainment: medium}
+    MRK: {pharma: high, healthcare: medium}
+    MS: {banking: high, financials: high}
+    MSFT: {technology: high}
+    NEE: {utilities: high, energy: medium}
+    NFLX: {media_entertainment: high, technology: low}
+    NKE: {retail: high}
+    NOC: {defense: high, aerospace: high}
+    NVDA: {technology: high}
+    ORCL: {technology: high}
+    OXY: {energy: high}
+    PFE: {pharma: high, healthcare: medium}
+    PLD: {real_estate: high}
+    PLTR: {technology: high, defense: medium}
+    RTX: {defense: high, aerospace: high}
+    SBUX: {food: high, hospitality: medium}
+    SLB: {energy: high}
+    SO: {utilities: high, energy: medium}
+    T: {telecom: high, media_entertainment: low}
+    TMUS: {telecom: high}
+    TSLA: {automotive: high, technology: medium}
+    UNH: {healthcare: high, insurance: high}
+    UNP: {railroads: high, transportation: medium}
+    UPS: {transportation: high}
+    V: {financials: high, technology: low}
+    VZ: {telecom: high}
+    WFC: {banking: high, financials: high}
+    WMT: {retail: high, food: medium}
+    XOM: {energy: high}
+
+  # GICS sector → our vocabulary. Keys are snake_case GICS sector names;
+  # the resolver normalizes caller input ("Health Care" → health_care).
+  gics:
+    energy: {energy: high}
+    materials: {chemicals: medium, mining: medium}
+    industrials: {manufacturing: medium, transportation: low}
+    consumer_discretionary: {retail: medium, automotive: low}
+    consumer_staples: {food: medium, retail: low}
+    health_care: {healthcare: high, pharma: medium}
+    financials: {financials: high, banking: medium, insurance: medium}
+    information_technology: {technology: high}
+    communication_services: {telecom: medium, media_entertainment: medium}
+    utilities: {utilities: high}
+    real_estate: {real_estate: high}

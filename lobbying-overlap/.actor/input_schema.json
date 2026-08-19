@@ -1,0 +1,72 @@
+{
+    "title": "Congress Lobbying × Trades Overlap — Input",
+    "type": "object",
+    "schemaVersion": 1,
+    "properties": {
+        "quarters": {
+            "title": "Quarters",
+            "type": "array",
+            "description": "Calendar quarters to cover, e.g. [\"2026-Q1\"]. Empty = latest available quarter.",
+            "editor": "stringList",
+            "prefill": [],
+            "patternValue": "^\\d{4}-Q[1-4]$"
+        },
+        "chambers": {
+            "title": "Chambers",
+            "type": "array",
+            "description": "Which chambers to scan for trades and committee membership.",
+            "editor": "select",
+            "items": {
+                "type": "string",
+                "enum": ["house", "senate"],
+                "enumTitles": ["House", "Senate"]
+            },
+            "default": ["house", "senate"]
+        },
+        "overlap_types": {
+            "title": "Overlap types to include",
+            "type": "array",
+            "description": "committee_match = lobbying targeted a committee the member sits on. sector_match_only = sector overlap with no committee link.",
+            "editor": "select",
+            "items": {
+                "type": "string",
+                "enum": ["committee_match", "sector_match_only"],
+                "enumTitles": ["Committee match", "Sector match only"]
+            },
+            "default": ["committee_match", "sector_match_only"]
+        },
+        "max_concurrency": {
+            "title": "Max concurrency",
+            "type": "integer",
+            "description": "Bounded concurrency for outbound API calls (respect LDA rate limits). Clamped to 10 server-side regardless of the value entered here, to protect the shared LDA key's rate limit.",
+            "editor": "number",
+            "default": 5,
+            "minimum": 1,
+            "maximum": 10
+        },
+        "lda_api_key": {
+            "title": "Senate LDA API key",
+            "type": "string",
+            "description": "Optional. The actor ships with a shared key sufficient for typical runs. Provide your own free key from lda.gov for heavy multi-quarter backfills or guaranteed throughput.",
+            "editor": "textfield",
+            "isSecret": true
+        },
+        "lda_max_pages": {
+            "title": "LDA max pages (debug)",
+            "type": "integer",
+            "description": "Cap LDA result pages per quarter. Leave empty for full runs; set low (e.g. 5) for cheap test runs.",
+            "editor": "number",
+            "minimum": 1
+        },
+        "max_filings_per_record": {
+            "title": "Max lobbying filings per record",
+            "type": "integer",
+            "description": "Cap on the lobbying evidence list per overlap record (largest reported amounts kept). The record's lobbying_filing_count always shows the uncapped total.",
+            "editor": "number",
+            "default": 100,
+            "minimum": 1,
+            "maximum": 1000
+        }
+    },
+    "required": []
+}

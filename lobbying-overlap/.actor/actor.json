@@ -1,0 +1,16 @@
+{
+    "actorSpecification": 1,
+    "name": "congress-lobbying-trades-overlap",
+    "title": "Congress Lobbying × Trades Overlap",
+    "description": "Joins US federal lobbying disclosures (LDA) with Congressional stock trading (STOCK Act / PTR) and surfaces same-quarter, same-sector overlaps. A records product, traceable to filing IDs and source URLs.",
+    "version": "0.0",
+    "meta": {
+        "templateId": "python-start"
+    },
+    "input": "./input_schema.json",
+    "output": "./output_schema.json",
+    "dockerfile": "../Dockerfile",
+    "storages": {
+        "dataset": "./dataset_schema.json"
+    }
+}

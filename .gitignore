@@ -13,6 +13,15 @@ dist/
 
 # Runtime data
 data/
+!lobbying-overlap/data/
+
+# Python (lobbying-overlap)
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+lobbying-overlap/.cache/
+lobbying-overlap/storage/
 
 # Environment
 .env

@@ -1,0 +1,35 @@
+{
+    "actorSpecification": 1,
+    "views": {
+        "overview": {
+            "title": "Overlaps",
+            "transformation": {
+                "fields": [
+                    "member_name",
+                    "chamber",
+                    "party",
+                    "state",
+                    "quarter",
+                    "sector",
+                    "overlap_type",
+                    "mapping_confidence",
+                    "disclosure_lag_days"
+                ]
+            },
+            "display": {
+                "component": "table",
+                "properties": {
+                    "member_name": { "label": "Member" },
+                    "chamber": { "label": "Chamber" },
+                    "party": { "label": "Party" },
+                    "state": { "label": "State" },
+                    "quarter": { "label": "Quarter" },
+                    "sector": { "label": "Sector" },
+                    "overlap_type": { "label": "Overlap type" },
+                    "mapping_confidence": { "label": "Confidence" },
+                    "disclosure_lag_days": { "label": "Disclosure lag (days)" }
+                }
+            }
+        }
+    }
+}

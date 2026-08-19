@@ -1,0 +1,14 @@
+.git
+.gitignore
+.cache
+storage
+apify_storage
+tests
+__pycache__
+**/__pycache__
+*.pyc
+.env
+README.md
+requirements-dev.txt
+.claude
+.dockerignore

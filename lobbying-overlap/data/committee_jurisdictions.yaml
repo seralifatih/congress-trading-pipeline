@@ -1,0 +1,172 @@
+# Committee → sector jurisdiction tags.
+#
+# Hand-editable. This file is the committee leg of the three-way crosswalk
+# (issue codes / tickers / committee jurisdiction — see CLAUDE.md).
+#
+# Rules:
+# - Key = thomas_id from unitedstates/congress-legislators (HSAS, SSFI, ...).
+# - Subcommittees (e.g. HSAS28) inherit the parent committee's sectors
+#   unless listed here explicitly with their own entry.
+# - `sectors` is a list of lowercase snake_case tags. Keep the vocabulary
+#   aligned with data/crosswalk.yaml sector names.
+# - Committees missing from this file get the tag `unmapped` and are
+#   reported in the run summary — never silently dropped.
+# - Neutral language only. Tags describe jurisdiction, not conduct.
+
+version: 1
+
+committees:
+  # ---- House standing committees ----
+  HSAG:
+    name: House Committee on Agriculture
+    sectors: [agriculture, food]
+  HSAP:
+    name: House Committee on Appropriations
+    sectors: [government_funding]
+  HSAS:
+    name: House Committee on Armed Services
+    sectors: [defense, aerospace]
+  HSBA:
+    name: House Committee on Financial Services
+    sectors: [financials, banking, insurance, real_estate]
+  HSBU:
+    name: House Committee on the Budget
+    sectors: [government_funding]
+  HSED:
+    name: House Committee on Education and Workforce
+    sectors: [education, labor]
+  HSFA:
+    name: House Committee on Foreign Affairs
+    sectors: [defense, trade]
+  HSGO:
+    name: House Committee on Oversight and Government Reform
+    sectors: [government_operations]
+  HSHA:
+    name: House Committee on House Administration
+    sectors: [government_operations]
+  HSHM:
+    name: House Committee on Homeland Security
+    sectors: [defense, cybersecurity, immigration]
+  HSIF:
+    name: House Committee on Energy and Commerce
+    sectors: [energy, healthcare, pharma, telecom, technology, consumer_protection]
+  HSII:
+    name: House Committee on Natural Resources
+    sectors: [energy, mining, environment]
+  HSJU:
+    name: House Committee on the Judiciary
+    sectors: [legal, antitrust, immigration, intellectual_property]
+  HSPW:
+    name: House Committee on Transportation and Infrastructure
+    sectors: [transportation, construction, aviation, maritime]
+  HSRU:
+    name: House Committee on Rules
+    sectors: [government_operations]
+  HSSM:
+    name: House Committee on Small Business
+    sectors: [small_business]
+  HSSY:
+    name: House Committee on Science, Space, and Technology
+    sectors: [technology, aerospace, energy]
+  HSVR:
+    name: House Committee on Veterans' Affairs
+    sectors: [veterans, healthcare]
+  HSWM:
+    name: House Committee on Ways and Means
+    sectors: [tax, trade, healthcare]
+  HLIG:
+    name: House Permanent Select Committee on Intelligence
+    sectors: [defense, intelligence, cybersecurity]
+  HSSO:
+    name: House Committee on Ethics
+    sectors: [government_operations]
+  HSQJ:
+    name: House Select Subcommittee to Investigate the Remaining Questions Surrounding January 6, 2021
+    sectors: [government_operations]
+  HSZS:
+    name: House Select Committee on the Strategic Competition Between the United States and the Chinese Communist Party
+    sectors: [defense, trade, technology]
+
+  # ---- Senate standing committees ----
+  SSAF:
+    name: Senate Committee on Agriculture, Nutrition, and Forestry
+    sectors: [agriculture, food]
+  SSAP:
+    name: Senate Committee on Appropriations
+    sectors: [government_funding]
+  SSAS:
+    name: Senate Committee on Armed Services
+    sectors: [defense, aerospace]
+  SSBK:
+    name: Senate Committee on Banking, Housing, and Urban Affairs
+    sectors: [financials, banking, insurance, real_estate]
+  SSBU:
+    name: Senate Committee on the Budget
+    sectors: [government_funding]
+  SSCM:
+    name: Senate Committee on Commerce, Science, and Transportation
+    sectors: [technology, telecom, transportation, aviation, consumer_protection]
+  SSEG:
+    name: Senate Committee on Energy and Natural Resources
+    sectors: [energy, mining]
+  SSEV:
+    name: Senate Committee on Environment and Public Works
+    sectors: [environment, construction, transportation]
+  SSFI:
+    name: Senate Committee on Finance
+    sectors: [tax, trade, healthcare]
+  SSFR:
+    name: Senate Committee on Foreign Relations
+    sectors: [defense, trade]
+  SSGA:
+    name: Senate Committee on Homeland Security and Governmental Affairs
+    sectors: [defense, cybersecurity, government_operations]
+  SSHR:
+    name: Senate Committee on Health, Education, Labor, and Pensions
+    sectors: [healthcare, pharma, education, labor]
+  SSJU:
+    name: Senate Committee on the Judiciary
+    sectors: [legal, antitrust, immigration, intellectual_property]
+  SSRA:
+    name: Senate Committee on Rules and Administration
+    sectors: [government_operations]
+  SSSB:
+    name: Senate Committee on Small Business and Entrepreneurship
+    sectors: [small_business]
+  SSVA:
+    name: Senate Committee on Veterans' Affairs
+    sectors: [veterans, healthcare]
+  SLIN:
+    name: Senate Select Committee on Intelligence
+    sectors: [defense, intelligence, cybersecurity]
+  SLET:
+    name: Senate Select Committee on Ethics
+    sectors: [government_operations]
+  SLIA:
+    name: Senate Committee on Indian Affairs
+    sectors: [government_operations, energy]
+  SPAG:
+    name: Senate Special Committee on Aging
+    sectors: [healthcare, insurance]
+
+  # ---- Joint committees ----
+  JSEC:
+    name: Joint Economic Committee
+    sectors: [financials, tax]
+  JSTX:
+    name: Joint Committee on Taxation
+    sectors: [tax]
+  JSLC:
+    name: Joint Committee on the Library
+    sectors: [government_operations]
+  JSPR:
+    name: Joint Committee on Printing
+    sectors: [government_operations]
+  JCSE:
+    name: Commission on Security and Cooperation in Europe
+    sectors: [defense, trade]
+
+  # ---- Caucuses / commissions with membership records ----
+  SCNC:
+    name: United States Senate Caucus on International Narcotics Control
+    sectors: [legal, pharma]

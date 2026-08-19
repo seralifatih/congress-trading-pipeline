@@ -1,0 +1,19 @@
+{
+    "actorOutputSchemaVersion": 1,
+    "title": "Congress Lobbying × Trades Overlap — Output",
+    "description": "Overlap records land in the default dataset (one item per member/quarter/sector overlap, with full trade and lobbying evidence). Every run also writes a RUN_SUMMARY record to the key-value store with coverage stats, unmapped codes/tickers, and source freshness — including runs that find zero overlaps.",
+    "properties": {
+        "overlaps": {
+            "type": "string",
+            "title": "Overlap records",
+            "description": "One record per (member, quarter, sector) overlap: member identity, quarter, sector, mapping rule id and confidence, trades[], lobbying[], committees[], overlap_type (committee_match / sector_match_only), and disclosure_lag_days. Each record is traceable to filing IDs and source URLs.",
+            "template": "{{links.apiDefaultDatasetUrl}}/items"
+        },
+        "runSummary": {
+            "type": "string",
+            "title": "Run summary",
+            "description": "Coverage report for the run: quarters covered, members scanned, overlap counts by type, every unmapped issue code / ticker / committee / member name, and source freshness timestamps. Written on every run, including zero-overlap runs.",
+            "template": "{{links.apiDefaultKeyValueStoreUrl}}/records/RUN_SUMMARY"
+        }
+    }
+}
