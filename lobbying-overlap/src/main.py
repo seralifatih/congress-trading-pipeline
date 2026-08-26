@@ -28,6 +28,23 @@ VALID_CHAMBERS = ("house", "senate")
 MAX_ALLOWED_CONCURRENCY = 10
 
 
+def parse_quarter(value: str) -> tuple[int, int]:
+    """Parse a `YYYY-QN` string into `(year, quarter)`.
+
+    Accepts the same format this actor emits and expects on input
+    (`quarters`, `RunSummary.quarters_covered`). Raises `ValueError` on
+    anything else, including a bare year or an out-of-range quarter number.
+    """
+    year_str, _, quarter_str = value.partition("-Q")
+    if not quarter_str:
+        raise ValueError(f"Not a YYYY-QN quarter string: {value!r}")
+    year = int(year_str)
+    quarter = int(quarter_str)
+    if quarter not in (1, 2, 3, 4):
+        raise ValueError(f"Quarter must be 1-4, got {quarter} in {value!r}")
+    return year, quarter
+
+
 def previous_quarter(today: date) -> str:
     """Most recent *completed* calendar quarter — the default scan window
     (this data is quarterly by law; the current quarter is never complete)."""
