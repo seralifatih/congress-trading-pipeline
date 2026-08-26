@@ -1,0 +1,21 @@
+name: DocDrifter
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  check-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: seralifatih/docdrifter/action@master
+        with:
+          deepseek-api-key: ${{ secrets.DEEPSEEK_API_KEY }}
+          src-path: "lobbying-overlap/src/"
+          docs-path: "lobbying-overlap/README.md"
+          repo-description: "an Apify actor that joins US federal lobbying disclosures (LDA) with Congressional stock trading disclosures (STOCK Act PTR) into auditable overlap records"
