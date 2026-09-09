@@ -8,8 +8,7 @@
             "type": "array",
             "description": "Calendar quarters to cover, e.g. [\"2026-Q1\"]. Empty = latest available quarter.",
             "editor": "stringList",
-            "prefill": [],
-            "patternValue": "^\\d{4}-Q[1-4]$"
+            "prefill": []
         },
         "chambers": {
             "title": "Chambers",
