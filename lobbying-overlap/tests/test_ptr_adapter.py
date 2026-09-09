@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from src.models import Chamber, Party, TransactionType
+from src.models import Chamber, FilingType, Party, TransactionType
 from src.sources.legislators import Member
 from src.sources.ptr import (
     FALLBACK_PTR_URL,
@@ -87,6 +87,20 @@ class TestHouseRow:
         row = {**HOUSE_ROW, "ptr_url": "https://clerk.example/filing/123"}
         _, trade = map_row(row)  # type: ignore[misc]
         assert trade.ptr_url == "https://clerk.example/filing/123"
+
+    def test_filing_type_absent_is_null(self) -> None:
+        _, trade = map_row(HOUSE_ROW)  # type: ignore[misc]
+        assert trade.filing_type is None
+
+    def test_filing_type_passed_through(self) -> None:
+        row = {**HOUSE_ROW, "filing_type": "amendment"}
+        _, trade = map_row(row)  # type: ignore[misc]
+        assert trade.filing_type is FilingType.amendment
+
+    def test_filing_type_unrecognized_is_null(self) -> None:
+        row = {**HOUSE_ROW, "filing_type": "garbled"}
+        _, trade = map_row(row)  # type: ignore[misc]
+        assert trade.filing_type is None
 
 
 # ---------------------------------------------------------------------------

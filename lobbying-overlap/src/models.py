@@ -66,6 +66,11 @@ class TransactionType(str, Enum):
     exchange = "exchange"
 
 
+class FilingType(str, Enum):
+    original = "original"
+    amendment = "amendment"
+
+
 class Trade(BaseModel):
     """One transaction from a Periodic Transaction Report (PTR) filing.
 
@@ -85,6 +90,12 @@ class Trade(BaseModel):
     )
     transaction_date: date
     disclosure_date: date
+    filing_type: FilingType | None = Field(
+        default=None,
+        description="Same vocabulary as the House/Senate pipelines: "
+        "'original' | 'amendment' | null. Null only when the source "
+        "PTR/pipeline row didn't expose one — never guessed.",
+    )
 
     @model_validator(mode="after")
     def _disclosure_not_before_transaction(self) -> Trade:
@@ -112,6 +123,14 @@ class LobbyingFiling(BaseModel):
         default=None,
         ge=0.0,
         description="Reported lobbying spend in USD; None if not disclosed.",
+    )
+    amount_outlier: bool = Field(
+        default=False,
+        description="True when amount_reported is implausibly large for a "
+        "single LD-2 (>= AMOUNT_OUTLIER_THRESHOLD, e.g. filings with "
+        "registrant/client strings like 'STATE OF LOC NATION' that look "
+        "like data-entry errors in the source). Never dropped or zeroed — "
+        "flagged so a downstream spend total can choose to exclude it.",
     )
 
     @field_validator("issue_codes")
@@ -178,19 +197,32 @@ class OverlapRecord(BaseModel):
     # The three evidence lists. All required; a real overlap needs at
     # least one trade and one lobbying filing to exist.
     trades: list[Trade] = Field(min_length=1)
-    lobbying: list[LobbyingFiling] = Field(min_length=1)
-    lobbying_filing_count: NonNegativeInt = Field(
-        description="Total filings matching this (quarter, sector). When "
-        "greater than len(lobbying), the evidence list was capped to the "
-        "filings with the largest reported amounts — truncation is always "
-        "visible here, never silent.",
+    lobbying: list[LobbyingFiling] = Field(
+        min_length=1,
+        description="Lobbying filings for this (quarter, sector) — sector-"
+        "wide, not specific to any one trade or trader. A registrant in "
+        "this list is not necessarily connected to the member's trade "
+        "beyond sharing a sector and a quarter.",
+    )
+    sector_lobbying_filing_count: NonNegativeInt = Field(
+        description="Total filings matching this (quarter, sector) — sector-"
+        "wide, not trade-specific (see `lobbying`). When greater than "
+        "len(lobbying), the evidence list was capped to the filings with "
+        "the largest reported amounts — truncation is always visible here, "
+        "never silent. Named `sector_*` because it is easy to misread as "
+        "'filings related to this trade', which it is not.",
     )
     committees: list[CommitteeAssignment] = Field(default_factory=list)
 
     overlap_type: OverlapType
 
-    disclosure_lag_days: NonNegativeInt = Field(
-        description="Days from earliest trade date to its disclosure date.",
+    disclosure_lag_days: NonNegativeInt | None = Field(
+        description="Days from the earliest trade's transaction date to its "
+        "disclosure date. Null whenever that trade's filing_type is "
+        "'amendment': an amendment can be filed long after the original "
+        "PTR for reasons unrelated to disclosure timeliness (e.g. "
+        "correcting an amount range), so the gap is not a meaningful lag "
+        "and must not be emitted as if it were a late original filing.",
     )
 
     @model_validator(mode="after")
@@ -203,9 +235,10 @@ class OverlapRecord(BaseModel):
 
     @model_validator(mode="after")
     def _filing_count_covers_list(self) -> OverlapRecord:
-        if self.lobbying_filing_count < len(self.lobbying):
+        if self.sector_lobbying_filing_count < len(self.lobbying):
             raise ValueError(
-                "lobbying_filing_count cannot be smaller than the evidence list"
+                "sector_lobbying_filing_count cannot be smaller than the "
+                "evidence list"
             )
         return self
 
@@ -241,6 +274,20 @@ class RunSummary(BaseModel):
     members_scanned: NonNegativeInt = 0
     overlaps_by_type: dict[OverlapType, NonNegativeInt] = Field(
         default_factory=dict
+    )
+    low_confidence_excluded: NonNegativeInt = Field(
+        default=0,
+        description="Overlap records dropped because their strongest "
+        "mapping rule was mapping_confidence='low' (e.g. AT&T -> "
+        "media_entertainment via a GICS fallback). Excluded from the "
+        "dataset by default because they are wrong often enough to be "
+        "noise — counted here so the exclusion is visible, not silent.",
+    )
+    lda_amount_outliers: NonNegativeInt = Field(
+        default=0,
+        description="LDA filings seen this run with amount_reported >= "
+        "AMOUNT_OUTLIER_THRESHOLD, flagged amount_outlier=true on the "
+        "record rather than dropped or altered.",
     )
     unmapped: list[UnmappedItem] = Field(default_factory=list)
     source_freshness: list[SourceFreshness] = Field(default_factory=list)

@@ -1,5 +1,113 @@
 {
     "actorSpecification": 1,
+    "fields": {
+        "type": "object",
+        "required": [
+            "member_bioguide_id",
+            "member_name",
+            "chamber",
+            "party",
+            "state",
+            "quarter",
+            "sector",
+            "mapping_rule_id",
+            "mapping_confidence",
+            "trades",
+            "lobbying",
+            "sector_lobbying_filing_count",
+            "overlap_type",
+            "disclosure_lag_days"
+        ],
+        "properties": {
+            "member_bioguide_id": {
+                "type": "string",
+                "title": "Member bioguide ID",
+                "description": "Bioguide ID from unitedstates/congress-legislators.",
+                "example": "A000379"
+            },
+            "member_name": {
+                "type": "string",
+                "title": "Member name",
+                "example": "Mark Alford"
+            },
+            "chamber": {
+                "type": "string",
+                "title": "Chamber",
+                "enum": ["house", "senate"],
+                "example": "house"
+            },
+            "party": {
+                "type": "string",
+                "title": "Party",
+                "enum": ["D", "R", "I"],
+                "example": "R"
+            },
+            "state": {
+                "type": "string",
+                "title": "State",
+                "description": "Two-letter USPS state code.",
+                "example": "MO"
+            },
+            "quarter": {
+                "type": "string",
+                "title": "Quarter",
+                "description": "YYYY-QN, derived from the trade date.",
+                "example": "2026-Q1"
+            },
+            "sector": {
+                "type": "string",
+                "title": "Sector",
+                "description": "Crosswalk sector vocabulary, e.g. defense, healthcare.",
+                "example": "defense"
+            },
+            "mapping_rule_id": {
+                "type": "string",
+                "title": "Mapping rule ID",
+                "description": "Which crosswalk rule fired for this record — always traceable.",
+                "example": "tk:LMT->defense"
+            },
+            "mapping_confidence": {
+                "type": "string",
+                "title": "Mapping confidence",
+                "description": "Confidence of the strongest rule that produced this record. Records whose strongest rule is 'low' are excluded from the dataset entirely (see actor README) — this field will never be 'low' here.",
+                "enum": ["high", "medium"],
+                "example": "high"
+            },
+            "overlap_type": {
+                "type": "string",
+                "title": "Overlap type",
+                "enum": ["committee_match", "sector_match_only"],
+                "example": "committee_match"
+            },
+            "disclosure_lag_days": {
+                "type": ["integer", "null"],
+                "title": "Disclosure lag (days)",
+                "description": "Days from the earliest trade's transaction date to its disclosure date. Null whenever that trade's filing_type is 'amendment' — an amendment's gap to the transaction date is not a meaningful disclosure lag (see actor README).",
+                "example": 30
+            },
+            "sector_lobbying_filing_count": {
+                "type": "integer",
+                "title": "Sector lobbying filing count",
+                "description": "Total lobbying filings matching this (quarter, sector) — sector-wide, not specific to this trade. When greater than lobbying.length, the evidence list was capped to the largest reported amounts.",
+                "example": 38
+            },
+            "trades": {
+                "type": "array",
+                "title": "Trades",
+                "description": "Every trade by this member in this sector/quarter. Each item carries ptr_filing_id, ptr_url, ticker, transaction_type, amount_range, transaction_date, disclosure_date, and filing_type ('original' | 'amendment' | null, same vocabulary as the House/Senate pipelines)."
+            },
+            "lobbying": {
+                "type": "array",
+                "title": "Lobbying filings",
+                "description": "Lobbying filings in this sector/quarter, capped to the largest by reported amount. Each item carries lda_filing_uuid, lda_url, registrant, client, issue_codes, amount_reported, and amount_outlier (true when amount_reported looks like a data-entry error in the source, e.g. >= $10M on a single LD-2 — flagged, never dropped or zeroed)."
+            },
+            "committees": {
+                "type": "array",
+                "title": "Committees",
+                "description": "Committee assignments that produced a committee_match; empty for sector_match_only."
+            }
+        }
+    },
     "views": {
         "overview": {
             "title": "Overlaps",
@@ -13,7 +121,8 @@
                     "sector",
                     "overlap_type",
                     "mapping_confidence",
-                    "disclosure_lag_days"
+                    "disclosure_lag_days",
+                    "sector_lobbying_filing_count"
                 ]
             },
             "display": {
@@ -27,7 +136,8 @@
                     "sector": { "label": "Sector" },
                     "overlap_type": { "label": "Overlap type" },
                     "mapping_confidence": { "label": "Confidence" },
-                    "disclosure_lag_days": { "label": "Disclosure lag (days)" }
+                    "disclosure_lag_days": { "label": "Disclosure lag (days)" },
+                    "sector_lobbying_filing_count": { "label": "Sector lobbying filings" }
                 }
             }
         }

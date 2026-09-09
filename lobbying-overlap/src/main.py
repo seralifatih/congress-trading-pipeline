@@ -187,10 +187,15 @@ async def main() -> None:
             *(UnmappedItem(kind="member_name", value=v)
               for v in adapter.unresolved_names),
         ]
+        lda_amount_outliers = sum(
+            1 for filing in filings if filing.filing.amount_outlier
+        )
         summary = RunSummary(
             quarters_covered=quarters,
             members_scanned=len({mt.bioguide_id for mt in trades}),
             overlaps_by_type=by_type,
+            low_confidence_excluded=result.low_confidence_excluded,
+            lda_amount_outliers=lda_amount_outliers,
             unmapped=unmapped,
             source_freshness=[
                 SourceFreshness(source="senate_lda", fetched_at=fetched_at),
@@ -203,9 +208,11 @@ async def main() -> None:
 
         Actor.log.info(
             "Done: %d overlap records (%d committee_match, %d sector_match_only), "
-            "%d unmapped items, %d PTR rows skipped.",
+            "%d low-confidence excluded, %d unmapped items, %d PTR rows "
+            "skipped, %d LDA amount outliers flagged.",
             len(records),
             by_type[OverlapType.committee_match],
             by_type[OverlapType.sector_match_only],
-            len(unmapped), len(adapter.skipped),
+            result.low_confidence_excluded,
+            len(unmapped), len(adapter.skipped), lda_amount_outliers,
         )

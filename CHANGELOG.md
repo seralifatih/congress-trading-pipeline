@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [lobbying-overlap 0.1.0] - 2026-09-09
+
+### Added
+- **`filing_type`** field (`'original' \| 'amendment' \| null`, same vocabulary as the Senate/House pipelines) on every `trades[]` item. Read straight through from the Senate/House pipeline dataset rows the actor already ingests — those rows have carried `filing_type` since pipeline `v0.2.0`/[1.1.0], but the overlap actor's adapter was dropping it silently on ingestion.
+- **`amount_outlier`** field (boolean) on every `lobbying[]` item. LDA filings reporting `amount_reported >= $10,000,000` on a single LD-2 are far outside the normal range and look like source data-entry errors (observed: a $20,000,000 filing whose registrant/client string contains "STATE OF LOC NATION") — flagged, never dropped or zeroed, so a downstream spend total can choose to exclude them. Counted in `RUN_SUMMARY.lda_amount_outliers`.
+- `.actor/dataset_schema.json`: added a `fields` type block (previously view-only) describing the full `OverlapRecord` shape, including `filing_type` and `amount_outlier` on the nested `trades[]`/`lobbying[]` items.
+
+### Changed
+- **Breaking: `disclosure_lag_days` can now be `null`.** It is nulled whenever the record's earliest trade has `filing_type: "amendment"` — an amendment can be filed long after the original PTR for reasons unrelated to disclosure timeliness (e.g. correcting an amount range), so the transaction-to-disclosure gap is not a meaningful lag and must not be emitted as if it were a late original filing. Previously every record emitted a non-negative integer here regardless of amendment status, which invited misreading multi-hundred-day amendment refilings as extreme late-disclosure violations.
+- **Breaking: `lobbying_filing_count` renamed to `sector_lobbying_filing_count`.** No behavior change — naming fix only. The count (and the `lobbying[]` evidence list it describes) is sector-and-quarter-wide, not specific to the trade or trader in the record; the old name read as "filings related to this trade," which it never was (e.g. a PLTR overlap record's `lobbying[]` could include Drexel University and the Qatar embassy — both real filers in the `defense`/`aerospace` sector that quarter, neither connected to the trade itself).
+- **Breaking: records whose strongest crosswalk rule is `mapping_confidence: "low"` are excluded from the dataset by default.** These were wrong often enough to be noise (e.g. AT&T → `media_entertainment`, Mastercard → `technology` via the GICS ticker fallback). The exclusion count is reported in the new `RUN_SUMMARY.low_confidence_excluded` field so it's visible, not silent.
+- `RUN_SUMMARY`: added `low_confidence_excluded` and `lda_amount_outliers` counters.
+- Actor version `0.0` → `0.1.0` (first versioned release of this actor).
+
 ## [1.1.0] - 2026-09-09
 
 ### Added
@@ -48,5 +62,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Congress Lobbying × Trades Overlap pipeline: joins House and Senate trade data with federal lobbying disclosures (LDA) by member, quarter, and sector.
 - Hosted actors published on Apify: `congress-trading-pipeline` (Senate), `congress-trading-pipeline-1` (House), `congress-lobbying-trades-overlap`.
 
+[lobbying-overlap 0.1.0]: https://github.com/seralifatih/congress-trading-pipeline/releases/tag/lobbying-overlap-v0.1.0
 [1.1.0]: https://github.com/seralifatih/congress-trading-pipeline/releases/tag/v1.1.0
 [1.0.0]: https://github.com/seralifatih/congress-trading-pipeline/releases/tag/v1.0.0

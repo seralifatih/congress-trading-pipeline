@@ -41,7 +41,8 @@ One record per **(member, quarter, sector)** overlap — not one per trade, not 
       "transaction_type": "purchase",
       "amount_range": "$1,001 - $15,000",
       "transaction_date": "2026-01-05",
-      "disclosure_date": "2026-02-04"
+      "disclosure_date": "2026-02-04",
+      "filing_type": "original"
     }
   ],
   "lobbying": [
@@ -51,10 +52,11 @@ One record per **(member, quarter, sector)** overlap — not one per trade, not 
       "registrant": "Example Government Affairs LLC",
       "client": "Example Defense Corp",
       "issue_codes": ["DEF", "BUD"],
-      "amount_reported": 240000.0
+      "amount_reported": 240000.0,
+      "amount_outlier": false
     }
   ],
-  "lobbying_filing_count": 38,
+  "sector_lobbying_filing_count": 38,
   "committees": [
     {
       "committee_id": "HSAS",
@@ -77,12 +79,12 @@ One record per **(member, quarter, sector)** overlap — not one per trade, not 
 | `quarter` | `string` | `YYYY-QN`, derived from trade date |
 | `sector` | `string` | Crosswalk sector vocabulary, e.g. `defense`, `healthcare` |
 | `mapping_rule_id` | `string` | Which crosswalk rule fired, e.g. `tk:LMT->defense` — always traceable |
-| `mapping_confidence` | `'high' \| 'medium' \| 'low'` | Confidence of the strongest rule that produced this record |
+| `mapping_confidence` | `'high' \| 'medium'` | Confidence of the strongest rule that produced this record. `low`-confidence records are excluded from the dataset entirely — see "Low-confidence mappings are excluded" below |
 | `overlap_type` | `'committee_match' \| 'sector_match_only'` | See below |
-| `disclosure_lag_days` | `integer` | Days from earliest trade's transaction date to its disclosure date |
-| `trades[]` | `array` | Every trade by this member in this sector/quarter, each traceable to a PTR filing |
-| `lobbying[]` | `array` | Lobbying filings in this sector/quarter, capped to the largest by reported amount |
-| `lobbying_filing_count` | `integer` | Uncapped total — if greater than `lobbying.length`, the list was truncated |
+| `disclosure_lag_days` | `integer \| null` | Days from the earliest trade's transaction date to its disclosure date. `null` when that trade is an amendment — see "Amendments and `disclosure_lag_days`" below |
+| `trades[]` | `array` | Every trade by this member in this sector/quarter, each traceable to a PTR filing. Each item includes `filing_type` (`'original' \| 'amendment' \| null`, same vocabulary as the Senate/House pipelines) |
+| `lobbying[]` | `array` | Lobbying filings for this sector/quarter — sector-wide, not specific to this trade (see "`sector_lobbying_filing_count`, not `lobbying_filing_count`" below), capped to the largest by reported amount. Each item includes `amount_outlier` |
+| `sector_lobbying_filing_count` | `integer` | Uncapped total matching filings — if greater than `lobbying.length`, the list was truncated |
 | `committees[]` | `array` | Committee assignments that produced a `committee_match`; empty for `sector_match_only` |
 
 ### `overlap_type`
@@ -91,6 +93,26 @@ One record per **(member, quarter, sector)** overlap — not one per trade, not 
 - **`sector_match_only`** — the sector overlap exists, but no committee link does.
 
 LDA filings disclose which chamber or agency was lobbied, not which committee — so committee matching is resolved through sector jurisdiction, and the record shows exactly which committee and which jurisdiction tag produced the match.
+
+### Amendments and `disclosure_lag_days`
+
+Every trade in `trades[]` carries `filing_type` (`'original' | 'amendment' | null`) straight through from the Senate/House pipeline row it came from — same vocabulary those actors use, sourced from each filing's own label, never inferred from duplication.
+
+An amendment can be filed long after the original PTR for reasons that have nothing to do with disclosure timeliness — most commonly, correcting an amount range or asset description. If `disclosure_lag_days` were computed from an amendment's dates, a routine correction filed 200 days after the original trade would read as a 200-day disclosure-lag violation, when the *original* filing may have been timely and only the correction was late. That is not a finding this actor is in a position to make, so it doesn't.
+
+**The rule:** `disclosure_lag_days` is `null` whenever the record's earliest trade has `filing_type: "amendment"`. It is only ever a number when that trade is `"original"` or unlabeled (`null` — the source didn't say, which carries no particular suspicion). Consumers computing average or worst-case disclosure lag should filter to non-null values, not treat `null` as zero.
+
+### Low-confidence mappings are excluded
+
+The crosswalk's GICS-sector fallback (used when a ticker has no explicit override) is graded `high` / `medium` / `low` per rule, and `low`-confidence rules are wrong often enough to be noise rather than signal — e.g. AT&T mapping to `media_entertainment`, or Mastercard mapping to `technology`, purely because of their broad GICS sector classification. Records whose strongest matching rule is `low` confidence are **excluded from the dataset by default**; the count excluded is reported in `RUN_SUMMARY.low_confidence_excluded` so the exclusion is visible, never silent.
+
+### `sector_lobbying_filing_count`, not `lobbying_filing_count`
+
+`lobbying[]` and its count are **sector-and-quarter-wide**, not specific to the member's trade or the counterparties on the other side of it. A member who traded a defense stock will see every lobbying filing tagged to the `defense` sector that quarter — which can include registrants and clients with no connection to that trade at all (one real PLTR overlap record's `lobbying[]` included Drexel University, the Qatar embassy, and California water agencies, all legitimately lobbying on defense-adjacent issue codes that quarter). The field is named `sector_lobbying_filing_count` specifically so it can't be misread as "filings related to this trade."
+
+### LDA amount outliers
+
+A small number of LDA filings report implausibly large `amount_reported` values for a single LD-2 — most likely data-entry errors upstream (one observed filing reports **$20,000,000** with a registrant/client string containing "STATE OF LOC NATION"). These are never dropped or silently zeroed: any `lobbying[]` item with `amount_reported >= $10,000,000` carries `amount_outlier: true`, and the count seen in a run is reported in `RUN_SUMMARY.lda_amount_outliers`. A downstream consumer summing `amount_reported` for a spend total should filter out `amount_outlier: true` rows first.
 
 ---
 
@@ -112,9 +134,9 @@ LDA filings disclose which chamber or agency was lobbied, not which committee �
 
 **3. Crosswalk.** Every trade ticker and every LDA issue code is mapped onto a shared sector vocabulary via [`data/crosswalk.yaml`](data/crosswalk.yaml) (ticker overrides, then a GICS-sector fallback for issue codes). Committee jurisdictions come from [`data/committee_jurisdictions.yaml`](data/committee_jurisdictions.yaml). Every mapping carries a `confidence` grade and a `rule_id` that names exactly which row fired.
 
-**4. Join (pure).** Trades and lobbying filings are grouped by `(member, quarter, sector)`. A record is emitted only when a member traded in a sector that had at least one lobbying filing that same quarter. Committee assignments are checked against the sector to decide `committee_match` vs `sector_match_only`.
+**4. Join (pure).** Trades and lobbying filings are grouped by `(member, quarter, sector)`. A record is emitted only when a member traded in a sector that had at least one lobbying filing that same quarter, and only when the group's strongest crosswalk rule is `high` or `medium` confidence — `low`-confidence groups are excluded (see "Low-confidence mappings are excluded" above). Committee assignments are checked against the sector to decide `committee_match` vs `sector_match_only`. `disclosure_lag_days` is computed from the earliest trade in the group, and nulled if that trade is an amendment (see "Amendments and `disclosure_lag_days`" above).
 
-**5. Output.** Records land in the default Apify dataset. Every run — including zero-overlap runs — also writes a `RUN_SUMMARY` to the key-value store: quarters covered, members scanned, overlap counts by type, and every unmapped issue code / ticker / committee / member name, so nothing is silently dropped.
+**5. Output.** Records land in the default Apify dataset. Every run — including zero-overlap runs — also writes a `RUN_SUMMARY` to the key-value store: quarters covered, members scanned, overlap counts by type, low-confidence records excluded, LDA amount outliers flagged, and every unmapped issue code / ticker / committee / member name, so nothing is silently dropped.
 
 All HTTP calls retry with exponential backoff; the LDA fetcher additionally paces requests against LDA's shared rate limit and honors `Retry-After`.
 
@@ -151,7 +173,7 @@ Copy `.env.example` locally if you add one for your own runs; none is checked in
 | `overlap_types` | array | both | Filter to `committee_match` and/or `sector_match_only` |
 | `lda_api_key` | secret | — | Optional. The actor ships with a shared key sufficient for typical runs. Provide your own free key from lda.gov for heavy multi-quarter backfills or guaranteed throughput. |
 | `max_concurrency` | integer | `5` | Outbound API concurrency (clamped to 10 server-side) |
-| `max_filings_per_record` | integer | `100` | Cap on the lobbying evidence list per record; `lobbying_filing_count` always shows the uncapped total |
+| `max_filings_per_record` | integer | `100` | Cap on the lobbying evidence list per record; `sector_lobbying_filing_count` always shows the uncapped total |
 | `lda_max_pages` | integer | — | Debug cap for cheap test runs |
 
 ---

@@ -3,7 +3,7 @@
     "name": "congress-lobbying-trades-overlap",
     "title": "Congress Lobbying × Trades Overlap",
     "description": "Joins US federal lobbying disclosures (LDA) with Congressional stock trading (STOCK Act / PTR) and surfaces same-quarter, same-sector overlaps. A records product, traceable to filing IDs and source URLs.",
-    "version": "0.0",
+    "version": "0.1.0",
     "meta": {
         "templateId": "python-start"
     },

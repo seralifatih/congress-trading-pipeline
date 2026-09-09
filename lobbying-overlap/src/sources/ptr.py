@@ -10,10 +10,17 @@ The two actors emit different schemas:
 
     House (one row per transaction):
         politician, transaction_date, filing_date, ticker, asset_type,
-        type, amount_min, amount_max, owner, id
+        type, amount_min, amount_max, owner, filing_type, id
     Senate:
         filer_name, trade_type, ticker, asset_type, amount_low,
-        amount_high, trade_date, filing_date, owner, is_active, id
+        amount_high, trade_date, filing_date, owner, is_active,
+        filing_type, id
+
+    `filing_type` ('original' | 'amendment' | null, same vocabulary as the
+    source pipelines) is read straight through when present — see
+    `_filing_type()`. `amendment_number` (Senate-only upstream) has no
+    equivalent here; disclosure_lag_days is nulled for amendments instead
+    of trying to interpret it (see overlap.py).
 
 Rows are dispatched on which name field is present.
 
@@ -55,12 +62,12 @@ import httpx
 from pydantic import ValidationError
 
 if __package__:
-    from ..models import Trade, TransactionType
+    from ..models import FilingType, Trade, TransactionType
     from ..overlap import MemberTrade
     from .legislators import Member
 else:  # pragma: no cover - loose-script fallback
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from models import Trade, TransactionType  # type: ignore[no-redefine]
+    from models import FilingType, Trade, TransactionType  # type: ignore[no-redefine]
     from overlap import MemberTrade  # type: ignore[no-redefine]
     from sources.legislators import Member  # type: ignore[no-redefine]
 
@@ -226,6 +233,16 @@ def _parse_date(raw: object) -> date | None:
         return None
 
 
+def _filing_type(raw: object) -> FilingType | None:
+    """Source rows carry 'original' | 'amendment' | null verbatim (same
+    vocabulary the House/Senate pipelines use) — pass through, never guess."""
+    if raw == "original":
+        return FilingType.original
+    if raw == "amendment":
+        return FilingType.amendment
+    return None
+
+
 def _row_chamber(row: dict) -> str | None:
     if "politician" in row:
         return "house"
@@ -285,6 +302,7 @@ def map_row(row: dict) -> tuple[str, Trade] | SkippedRow:
             amount_range=amount,
             transaction_date=tx_date,
             disclosure_date=disclosure,
+            filing_type=_filing_type(row.get("filing_type")),
         )
     except ValidationError as exc:
         # e.g. disclosure before transaction — bad source data.

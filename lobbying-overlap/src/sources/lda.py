@@ -74,6 +74,16 @@ MAX_RETRIES = 6
 BACKOFF_BASE = 5.0  # seconds
 BACKOFF_CAP = 120.0  # seconds
 
+# A single LD-2 reporting >= $10M in one quarter is far outside the normal
+# range (most quarterly filings are four to low-six figures; the largest
+# legitimate registrants rarely clear seven figures per client per
+# quarter). Filings at or above this look like data-entry errors in the
+# source (observed: a $20,000,000 row whose registrant/client string
+# contains "STATE OF LOC NATION") rather than real lobbying spend. Never
+# dropped or zeroed — flagged via `amount_outlier` so a downstream spend
+# total can choose to exclude them.
+AMOUNT_OUTLIER_THRESHOLD = 10_000_000.0
+
 # Global request pacing. The LDA quota is per key (registered ~120/min,
 # anonymous ~15/min) and shared by ALL page tasks — per-task backoff alone
 # cannot respect a shared quota: tasks burn it in a burst, then all 429
@@ -438,6 +448,16 @@ def map_filing(raw: dict) -> LobbyingFiling | None:
     income = _parse_amount(raw.get("income"))
     expenses = _parse_amount(raw.get("expenses"))
     amount_reported = income if income is not None else expenses
+    amount_outlier = (
+        amount_reported is not None and amount_reported >= AMOUNT_OUTLIER_THRESHOLD
+    )
+    if amount_outlier:
+        logger.warning(
+            "LDA filing %s: amount_reported=%.2f >= outlier threshold "
+            "(registrant=%r client=%r) — flagged, not dropped",
+            raw.get("filing_uuid"), amount_reported,
+            registrant.get("name"), client.get("name"),
+        )
 
     try:
         return LobbyingFiling(
@@ -447,6 +467,7 @@ def map_filing(raw: dict) -> LobbyingFiling | None:
             client=client.get("name") or "<unknown client>",
             issue_codes=issue_codes,
             amount_reported=amount_reported,
+            amount_outlier=amount_outlier,
         )
     except KeyError as exc:
         raise LDAError(f"LDA filing missing required field {exc}") from exc

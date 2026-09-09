@@ -30,6 +30,7 @@ from datetime import date
 if __package__:
     from .crosswalk import Crosswalk, Mapping
     from .models import (
+        FilingType,
         LobbyingFiling,
         MappingConfidence,
         OverlapRecord,
@@ -41,6 +42,7 @@ else:  # pragma: no cover - loose-script fallback
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from crosswalk import Crosswalk, Mapping  # type: ignore[no-redefine]
     from models import (  # type: ignore[no-redefine]
+        FilingType,
         LobbyingFiling,
         MappingConfidence,
         OverlapRecord,
@@ -86,6 +88,7 @@ class OverlapResult:
     unmapped_tickers: list[str] = field(default_factory=list)
     unmapped_issue_codes: list[str] = field(default_factory=list)
     unknown_member_ids: list[str] = field(default_factory=list)
+    low_confidence_excluded: int = 0
 
 
 def quarter_of(d: date) -> str:
@@ -190,11 +193,22 @@ def build_overlaps(
 
     # --- join ---
     records: list[OverlapRecord] = []
+    low_confidence_excluded = 0
     for key in sorted(grouped_trades):
         bioguide, quarter, sector = key
         sector_filings = filings_by_sector.get((quarter, sector))
         if not sector_filings:
             continue  # nobody lobbied this sector this quarter — no overlap
+
+        rule = primary_rule[key]
+        if rule.confidence is MappingConfidence.low:
+            # Low-confidence crosswalk rules are wrong often enough to be
+            # noise (e.g. AT&T -> media_entertainment, Mastercard ->
+            # technology via the GICS fallback) — excluded from the
+            # dataset by default. Counted in RUN_SUMMARY so the exclusion
+            # is visible, never silent.
+            low_confidence_excluded += 1
+            continue
 
         member = members[bioguide]
 
@@ -220,7 +234,17 @@ def build_overlaps(
             key=lambda t: (t.transaction_date, t.ticker, t.ptr_filing_id),
         )
         earliest = min(record_trades, key=lambda t: t.transaction_date)
-        lag_days = (earliest.disclosure_date - earliest.transaction_date).days
+        # An amendment can be filed long after the original PTR for reasons
+        # unrelated to disclosure timeliness (e.g. correcting an amount
+        # range) — its gap to the transaction date is not a meaningful
+        # lag, so it must not be emitted as if it were a late original
+        # filing. Only a lag computed from a trade with filing_type ==
+        # 'original' (or unknown/null — no basis to suspect it) is real.
+        lag_days = (
+            None
+            if earliest.filing_type is FilingType.amendment
+            else (earliest.disclosure_date - earliest.transaction_date).days
+        )
 
         all_filings = sorted(sector_filings.values(), key=_filing_evidence_key)
         evidence = sorted(
@@ -233,7 +257,6 @@ def build_overlaps(
                 bioguide, quarter, sector, len(all_filings), len(evidence),
             )
 
-        rule = primary_rule[key]
         records.append(
             OverlapRecord(
                 member_bioguide_id=member.bioguide_id,
@@ -247,7 +270,7 @@ def build_overlaps(
                 mapping_confidence=rule.confidence,
                 trades=record_trades,
                 lobbying=evidence,
-                lobbying_filing_count=len(all_filings),
+                sector_lobbying_filing_count=len(all_filings),
                 committees=matched_committees,
                 overlap_type=overlap_type,
                 disclosure_lag_days=lag_days,
@@ -255,10 +278,12 @@ def build_overlaps(
         )
 
     logger.info(
-        "overlap join: %d records (%d committee_match), "
-        "%d unmapped tickers, %d unmapped issue codes, %d unknown members",
+        "overlap join: %d records (%d committee_match), %d low-confidence "
+        "excluded, %d unmapped tickers, %d unmapped issue codes, "
+        "%d unknown members",
         len(records),
         sum(1 for r in records if r.overlap_type is OverlapType.committee_match),
+        low_confidence_excluded,
         len(unmapped_tickers),
         len(unmapped_codes),
         len(unknown_member_ids),
@@ -268,4 +293,5 @@ def build_overlaps(
         unmapped_tickers=sorted(unmapped_tickers),
         unmapped_issue_codes=sorted(unmapped_codes),
         unknown_member_ids=sorted(unknown_member_ids),
+        low_confidence_excluded=low_confidence_excluded,
     )

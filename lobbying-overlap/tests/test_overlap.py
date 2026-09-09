@@ -15,6 +15,7 @@ from src.crosswalk import Crosswalk
 from src.models import (
     Chamber,
     CommitteeAssignment,
+    FilingType,
     LobbyingFiling,
     MappingConfidence,
     OverlapType,
@@ -68,6 +69,7 @@ def make_trade(
     tx: date = date(2026, 1, 5),
     disclosed: date = date(2026, 2, 4),
     filing_id: str = "PTR-1",
+    filing_type: FilingType | None = None,
 ) -> Trade:
     return Trade(
         ptr_filing_id=filing_id,
@@ -77,6 +79,7 @@ def make_trade(
         amount_range="$1,001 - $15,000",
         transaction_date=tx,
         disclosure_date=disclosed,
+        filing_type=filing_type,
     )
 
 
@@ -315,6 +318,42 @@ class TestDisclosureLag:
             "PTR-early", "PTR-late",
         ]
 
+    def test_lag_null_when_earliest_trade_is_amendment(
+        self, xwalk: Crosswalk
+    ) -> None:
+        # An amendment can be filed long after the original for reasons
+        # unrelated to disclosure timeliness — the gap is not a real lag.
+        member = make_member()
+        result = run(
+            {member.bioguide_id: member},
+            [MemberTrade(
+                member.bioguide_id,
+                make_trade(
+                    "LMT", tx=date(2026, 1, 5), disclosed=date(2026, 8, 20),
+                    filing_type=FilingType.amendment,
+                ),
+            )],
+            [QuarterFiling("2026-Q1", make_filing(issue_codes=["DEF"]))],
+            xwalk,
+        )
+        assert result.records
+        assert all(r.disclosure_lag_days is None for r in result.records)
+
+    def test_lag_present_when_filing_type_unknown(self, xwalk: Crosswalk) -> None:
+        # filing_type=None (source didn't say) is not treated as suspect —
+        # only a known amendment nulls the lag.
+        member = make_member()
+        result = run(
+            {member.bioguide_id: member},
+            [MemberTrade(
+                member.bioguide_id,
+                make_trade("LMT", tx=date(2026, 1, 5), disclosed=date(2026, 2, 4)),
+            )],
+            [QuarterFiling("2026-Q1", make_filing(issue_codes=["DEF"]))],
+            xwalk,
+        )
+        assert all(r.disclosure_lag_days == 30 for r in result.records)
+
 
 # ---------------------------------------------------------------------------
 # Unmapped / unknown reporting — never silent
@@ -380,7 +419,7 @@ class TestReporting:
 
 
 # ---------------------------------------------------------------------------
-# Evidence capping — lobbying_filing_count always carries the real total
+# Evidence capping — sector_lobbying_filing_count always carries the real total
 # ---------------------------------------------------------------------------
 class TestFilingCap:
     def _run_with_filings(
@@ -400,7 +439,7 @@ class TestFilingCap:
         result = self._run_with_filings(xwalk, filings, cap=10)
         record = next(r for r in result.records if r.sector == "defense")
         assert len(record.lobbying) == 3
-        assert record.lobbying_filing_count == 3
+        assert record.sector_lobbying_filing_count == 3
 
     def test_cap_keeps_largest_amounts(self, xwalk: Crosswalk) -> None:
         filings = [
@@ -414,7 +453,7 @@ class TestFilingCap:
         # Largest two amounts kept; final list re-sorted by uuid for
         # stable reading order.
         assert {f.lda_filing_uuid for f in record.lobbying} == {"u-big", "u-mid"}
-        assert record.lobbying_filing_count == 4
+        assert record.sector_lobbying_filing_count == 4
 
     def test_cap_null_amounts_dropped_first(self, xwalk: Crosswalk) -> None:
         filings = [
@@ -426,7 +465,7 @@ class TestFilingCap:
         record = next(r for r in result.records if r.sector == "defense")
         kept = {f.lda_filing_uuid for f in record.lobbying}
         assert "u-paid" in kept
-        assert record.lobbying_filing_count == 3
+        assert record.sector_lobbying_filing_count == 3
 
     def test_cap_deterministic_on_ties(self, xwalk: Crosswalk) -> None:
         filings = [make_filing(f"u-{i}", amount=None) for i in range(5)]

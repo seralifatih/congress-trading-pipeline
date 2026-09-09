@@ -60,7 +60,7 @@
         "max_filings_per_record": {
             "title": "Max lobbying filings per record",
             "type": "integer",
-            "description": "Cap on the lobbying evidence list per overlap record (largest reported amounts kept). The record's lobbying_filing_count always shows the uncapped total.",
+            "description": "Cap on the lobbying evidence list per overlap record (largest reported amounts kept). The record's sector_lobbying_filing_count always shows the uncapped total.",
             "editor": "number",
             "default": 100,
             "minimum": 1,
