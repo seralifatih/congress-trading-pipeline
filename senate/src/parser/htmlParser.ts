@@ -169,6 +169,10 @@ export function parseHtml(html: string): RawTransaction[] {
       amount: cell(cells, cols.amount, $),
       owner: cell(cells, cols.owner, $),
       source_id: sourceId,
+      // This fallback parses a transaction table, not the filing-listing page
+      // that carries the "(Amendment N)" label — genuinely unavailable here.
+      filing_type: null,
+      amendment_number: null,
       raw_json: raw,
     });
   });

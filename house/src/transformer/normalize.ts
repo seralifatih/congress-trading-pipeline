@@ -161,6 +161,8 @@ export function normalize(raw: RawTransaction): Transaction | null {
     amount_max,
     owner: normalizeOwner(raw.owner),
     source_id: raw.source_id,
+    content_hash: '', // filled in by pipeline.ts alongside id, once amount_min/max etc. are final
+    filing_type: raw.filing_type,
   };
 }
 

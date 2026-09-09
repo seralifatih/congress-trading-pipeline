@@ -28,6 +28,35 @@ export function generateId(transaction: Transaction): string {
   return createHash('sha256').update(dedupKey(transaction)).digest('hex');
 }
 
+// ─── Content fingerprint ──────────────────────────────────────────────────────
+// SHA-256 of politician|transaction_date|asset_name|type|amount_min|amount_max
+// |owner — deliberately EXCLUDING source_id. This is additive: it does not
+// change how `id` is computed.
+//
+// Two rows can legitimately share a content_hash:
+//   - WITHIN the same source document: a genuine separate tranche (e.g. two
+//     same-day purchases of the same structured note) — keep both.
+//   - ACROSS different source documents: the same real-world transaction
+//     reported more than once (e.g. an original PTR and its amendment both
+//     listing the same trade, or two accidental duplicate filings) — keep
+//     both; do not deduplicate. Consumers decide what to do with the match.
+// This function never drops or merges rows — it only labels them so a
+// consumer can detect the cross-document case. See README "Duplicate
+// transactions across filings" for a worked example.
+
+export function computeContentHash(t: Transaction): string {
+  const key = [
+    t.politician.toLowerCase().trim(),
+    t.transaction_date.toLowerCase().trim(),
+    t.asset_name.toLowerCase().trim(),
+    t.type,
+    String(t.amount_min),
+    t.amount_max === null ? '' : String(t.amount_max),
+    t.owner,
+  ].join('|');
+  return createHash('sha256').update(key).digest('hex');
+}
+
 // ─── Deduplication ────────────────────────────────────────────────────────────
 
 export function dedup(incoming: Transaction[], existing: Transaction[]): Transaction[] {

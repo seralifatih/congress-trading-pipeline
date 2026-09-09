@@ -24,13 +24,17 @@ One row per individual transaction reported in a Senate PTR:
   "type": "buy",
   "amount_min": 250001,
   "amount_max": 500000,
-  "owner": "self"
+  "owner": "self",
+  "source_id": "257795ae-e1b2-411d-b562-8fe4c2a4f2a1|6",
+  "content_hash": "7c2e5b8d4f6a0c9e3b7d1fa3f9c1e2b8d47f60a1c5e93b2d8f7a4c6e0b1d9f3a",
+  "filing_type": "original",
+  "amendment_number": null
 }
 ```
 
 | Field | Type | Notes |
 |---|---|---|
-| `id` | `string` | SHA-256 of the natural key (`politician\|date\|asset\|amount\|source_id`) — stable dedup key |
+| `id` | `string` | SHA-256 of `politician\|date\|asset\|amount\|source_id` — unique per row, changes if source_id changes |
 | `politician` | `string` | Filer name as it appears on the PTR |
 | `transaction_date` | `YYYY-MM-DD` | Trade execution date |
 | `filing_date` | `YYYY-MM-DD` | Date the PTR was submitted |
@@ -41,9 +45,60 @@ One row per individual transaction reported in a Senate PTR:
 | `amount_min` | `integer` | Lower bound of reported amount range, USD |
 | `amount_max` | `integer \| null` | Upper bound. `null` for unbounded "Over $X" disclosures |
 | `owner` | `'self' \| 'joint' \| 'spouse' \| 'child'` | Account owner per STOCK Act categories |
+| `source_id` | `string` | The source PTR's document id plus the row's ordinal within it (`<ptr_uuid>\|<row_index>`) — identifies exactly which document and which line produced this row |
+| `content_hash` | `string` | SHA-256 of `politician\|date\|asset\|type\|amount_min\|amount_max\|owner` — deliberately excludes `source_id`. See "Duplicate transactions across filings" below |
+| `filing_type` | `'original' \| 'amendment' \| null` | Read from the PTR's own "(Amendment N)" label. `null` only when the source page didn't expose a label — never guessed from duplication |
+| `amendment_number` | `integer \| null` | The N in "(Amendment N)". `null` for originals and for anything the source doesn't label |
 
-Same schema as the House actor — records from both merge cleanly on
-field names and dedup semantics.
+Same core schema as the House actor — records from both merge cleanly
+on field names and dedup semantics. `amendment_number` is Senate-only;
+the House source has no equivalent sequence number (see its README).
+
+### Duplicate transactions across filings
+
+`id` is unique per row by construction (it includes `source_id`), so
+two rows never collide — but that also means two rows describing the
+*same real-world trade* can carry two different, permanently distinct
+ids if the trade appears in more than one source document. This
+happens in practice: Senate offices sometimes file the same PTR twice,
+or file an amendment that re-lists a transaction from the original.
+
+`content_hash` is how you detect that case. It fingerprints only the
+transaction's real-world content — politician, date, asset, buy/sell,
+amount range, owner — and deliberately leaves `source_id` out, so two
+rows describing the same trade hash identically regardless of which
+document or which row produced them.
+
+**We never drop or merge rows for you.** A shared `content_hash` means
+one of two things, and only you have the context to tell them apart:
+
+- **Same document, shared `content_hash`:** a legitimate separate
+  transaction — e.g. a spouse's structured note purchased in two
+  same-day tranches, each its own line item. Keep both; this is not a
+  duplicate.
+- **Different documents, shared `content_hash`:** the same real-world
+  transaction reported more than once — e.g. an original PTR and its
+  amendment both listing the trade, or two accidental duplicate
+  filings. A naive `SUM(amount)` across both rows double-counts.
+
+**Worked example.** Sen. McCormick's PTR filed 2026-08-27 contains two
+purchases of the same structured note on the same day, same amount
+bracket — two different rows (`source_id` ending `|2` and `|3`) in the
+*same* document, sharing a `content_hash`. Keep both; they are real,
+distinct tranches.
+
+By contrast, Sen. Tuberville's PTR filed 2024-10-29 exists as two
+*separate* documents (`2b076d77-6bc1-4b67-8be9-8f45a787479f` and
+`cce52b36-d00c-4710-a8ee-e84893fb4be1`), each containing the same 12
+transactions. All 12 pairs share a `content_hash` across the two
+`source_id` prefixes. Summing `amount_min`/`amount_max` over all 24
+rows double-counts every trade — a consumer reconciling by
+`content_hash` + distinct source document should count each trade once.
+
+To group: `key = content_hash`, then inspect the `source_id` prefix
+(everything before the last `|`) of each row in the group — same
+prefix means same document (keep all), different prefixes mean
+different documents (your call on which to count).
 
 ---
 
@@ -70,9 +125,12 @@ as fallback.
 amount ranges, dates, and owner categories map to the canonical
 schema shared with the House actor.
 
-**4. Dedup.** The natural key (`politician|date|asset|amount`) is
-hashed to a stable SHA-256 ID, so re-running over an overlapping date
-window will not produce duplicate rows.
+**4. Dedup.** The natural key (`politician|date|asset|amount|source_id`)
+is hashed to a stable SHA-256 ID, so re-running over an overlapping
+date window will not produce duplicate rows from the same source
+document. A separate `content_hash` (source_id excluded) lets you spot
+the same real-world trade reported across two different documents —
+see "Duplicate transactions across filings" above.
 
 **5. Store.** Records land in the default Apify dataset, queryable
 via the Apify API or exportable as JSON, CSV, or Excel.

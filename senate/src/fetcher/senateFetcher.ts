@@ -358,9 +358,37 @@ async function fetchPtrHtml(
   return { html: result.html, csrf };
 }
 
+// ─── Filing type ──────────────────────────────────────────────────────────────
+// The PTR detail page heading reads "Periodic Transaction Report for
+// MM/DD/YYYY" for an original, or "... (Amendment N)" for an amendment. This
+// is the only signal the Senate eFD source exposes — there is no structured
+// field, link, or id referencing which prior filing an amendment supersedes.
+// Confirmed against live filings, e.g. Boozman PTR 4184cc9a-78e0-45f3-84f7-
+// 642011e6ff98 ("... (Amendment 1)") vs 4a558db2-e492-4e8f-8a28-7b703a5c8e08
+// (no suffix). Never inferred from duplicate documents — null if the heading
+// doesn't match either shape.
+
+const AMENDMENT_HEADING_RE = /\(Amendment\s+(\d+)\)/i;
+
+function parseFilingType(html: string): { filing_type: 'original' | 'amendment' | null; amendment_number: number | null } {
+  const $ = cheerio.load(html);
+  const heading = $('h1, h2, h3').first().text().replace(/\s+/g, ' ').trim();
+  if (!heading) return { filing_type: null, amendment_number: null };
+
+  const amendMatch = heading.match(AMENDMENT_HEADING_RE);
+  if (amendMatch) {
+    return { filing_type: 'amendment', amendment_number: parseInt(amendMatch[1]!, 10) };
+  }
+  if (/Periodic Transaction Report/i.test(heading)) {
+    return { filing_type: 'original', amendment_number: null };
+  }
+  return { filing_type: null, amendment_number: null };
+}
+
 function parsePtrTransactions(html: string, meta: FilingMeta): RawTransaction[] {
   const $ = cheerio.load(html);
   const out: RawTransaction[] = [];
+  const { filing_type, amendment_number } = parseFilingType(html);
 
   // Try multiple selectors — Senate EFD layout has shifted over time
   let rows = $('table tbody tr');
@@ -396,6 +424,8 @@ function parsePtrTransactions(html: string, meta: FilingMeta): RawTransaction[] 
       amount: amount ?? '',
       owner: owner ?? '',
       source_id: `${meta.ptr_uuid}|${idx}`,
+      filing_type,
+      amendment_number,
       raw_json: {
         ptr_uuid: meta.ptr_uuid,
         row_index: idx,

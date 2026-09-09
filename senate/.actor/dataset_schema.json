@@ -11,14 +11,41 @@
       "type",
       "amount_min",
       "owner",
-      "id"
+      "id",
+      "source_id",
+      "content_hash"
     ],
     "properties": {
       "id": {
         "type": "string",
         "title": "ID",
-        "description": "Stable SHA-256 dedup key over (politician, transaction_date, asset_name, amount_min, amount_max).",
+        "description": "SHA-256 of (politician, transaction_date, asset_name, amount_min, amount_max, source_id). Unique per row — changes if source_id changes.",
         "example": "057cfd6485562a167c140ba950f5835cccf3bbb5fdaf55163f08c37c3cdcd372"
+      },
+      "source_id": {
+        "type": "string",
+        "title": "Source document ID",
+        "description": "The source PTR's document id plus the row's ordinal within it (<ptr_uuid>|<row_index>). Identifies exactly which document and line produced this row.",
+        "example": "257795ae-e1b2-411d-b562-8fe4c2a4f2a1|6"
+      },
+      "content_hash": {
+        "type": "string",
+        "title": "Content hash",
+        "description": "SHA-256 of (politician, transaction_date, asset_name, type, amount_min, amount_max, owner) — source_id excluded. Rows sharing this within the same document are legitimate separate tranches; rows sharing it across different documents are the same real-world transaction reported twice. Never used to drop or merge rows — see actor README.",
+        "example": "7c2e5b8d4f6a0c9e3b7d1fa3f9c1e2b8d47f60a1c5e93b2d8f7a4c6e0b1d9f3a"
+      },
+      "filing_type": {
+        "type": ["string", "null"],
+        "title": "Filing type",
+        "description": "Read from the PTR's own \"(Amendment N)\" label. Null only when the source page didn't expose a label — never inferred from duplicate documents.",
+        "enum": ["original", "amendment", null],
+        "example": "original"
+      },
+      "amendment_number": {
+        "type": ["integer", "null"],
+        "title": "Amendment number",
+        "description": "The N in \"(Amendment N)\". Null for originals and for anything the source doesn't label.",
+        "example": null
       },
       "politician": {
         "type": "string",
@@ -137,7 +164,7 @@
     },
     "full": {
       "title": "Full record",
-      "description": "All fields including asset_name, asset_type, and id.",
+      "description": "All fields including asset_name, asset_type, id, source_id, content_hash, and filing_type.",
       "transformation": {
         "fields": [
           "id",
@@ -150,7 +177,11 @@
           "type",
           "amount_min",
           "amount_max",
-          "owner"
+          "owner",
+          "source_id",
+          "content_hash",
+          "filing_type",
+          "amendment_number"
         ]
       },
       "display": {

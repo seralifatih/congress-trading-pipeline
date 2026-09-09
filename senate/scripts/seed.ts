@@ -1,5 +1,5 @@
 import { SqliteStore } from '../src/store/sqliteStore.js';
-import { generateId } from '../src/utils/dedup.js';
+import { generateId, computeContentHash } from '../src/utils/dedup.js';
 import type { Transaction } from '../src/types/index.js';
 
 const TODAY = '2026-04-29';
@@ -48,8 +48,9 @@ const records: Omit<Transaction, 'id'>[] = [
 async function seed() {
   const store = SqliteStore.getInstance();
   const transactions: Transaction[] = records.map((r) => {
-    const t = r as Transaction;
-    return { ...t, id: generateId(t) };
+    // Seed data is synthetic — no real filing to derive filing_type from.
+    const t = { ...r, filing_type: null, amendment_number: null } as Transaction;
+    return { ...t, id: generateId(t), content_hash: computeContentHash(t) };
   });
 
   await store.save(transactions);

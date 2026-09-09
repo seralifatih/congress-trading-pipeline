@@ -46,13 +46,16 @@ One row per individual transaction reported in a House PTR:
   "type": "sell",
   "amount_min": 1001,
   "amount_max": 15000,
-  "owner": "self"
+  "owner": "self",
+  "source_id": "house_20034201_0",
+  "content_hash": "9e5d3296a3f9c1e2b8d47f60a1c5e93b2d8f7a4c6e0b1d9f3a7c2e5b8d4f6a0c",
+  "filing_type": "original"
 }
 ```
 
 | Field | Type | Notes |
 |---|---|---|
-| `id` | `string` | SHA-256 of `politician\|date\|asset\|amount_min\|amount_max\|source_id` — stable dedup key |
+| `id` | `string` | SHA-256 of `politician\|date\|asset\|amount_min\|amount_max\|source_id` — unique per row, changes if source_id changes |
 | `politician` | `string` | Filer name as it appears on the PTR |
 | `transaction_date` | `YYYY-MM-DD` | Trade execution date |
 | `filing_date` | `YYYY-MM-DD` | Date the PTR was submitted to the House Clerk |
@@ -63,6 +66,22 @@ One row per individual transaction reported in a House PTR:
 | `amount_min` | `integer` | Lower bound of reported amount range, USD |
 | `amount_max` | `integer \| null` | Upper bound. `null` for unbounded "Over $X" disclosures |
 | `owner` | `'self' \| 'joint' \| 'spouse' \| 'child'` | Account owner per STOCK Act categories |
+| `source_id` | `string` | Source PTR's DocID + row ordinal (`house_<DocID>_<row_index>`) |
+| `content_hash` | `string` | SHA-256 of `politician\|date\|asset\|type\|amount_min\|amount_max\|owner` (source_id excluded) — see "Duplicate transactions across filings" below |
+| `filing_type` | `'original' \| 'amendment' \| null` | Read from the PTR's own per-row "Filing Status: New/Amended" line. `null` when that line is missing — never guessed. No amendment-number equivalent exists in this source |
+
+### Duplicate transactions across filings
+
+`id` is unique per row (it includes `source_id`), so rows never
+collide — but the same real-world trade can still appear under two
+different ids if it's reported in more than one source document.
+`content_hash` fingerprints only the trade's real-world content
+(source_id excluded), so duplicate copies hash identically.
+
+**We never drop or merge rows.** Same document (same `source_id`
+prefix) sharing a `content_hash` is a legitimate separate transaction
+— keep both. Different documents sharing one is the same trade
+reported more than once — summing both double-counts it.
 
 ---
 

@@ -24,6 +24,9 @@ const CREATE_TABLE = `
     amount_max      INTEGER,
     owner           TEXT,
     source_id       TEXT NOT NULL,
+    content_hash    TEXT NOT NULL,
+    filing_type     TEXT,
+    amendment_number INTEGER,
     inserted_at     TEXT DEFAULT (datetime('now'))
   )
 `;
@@ -43,6 +46,9 @@ interface TransactionRow {
   amount_max: number | null;
   owner: string | null;
   source_id: string | null;
+  content_hash: string | null;
+  filing_type: string | null;
+  amendment_number: number | null;
   inserted_at: string;
 }
 
@@ -60,16 +66,21 @@ function rowToTransaction(row: TransactionRow): Transaction {
     amount_max: row.amount_max ?? null,
     owner: (row.owner ?? 'self') as Transaction['owner'],
     source_id: row.source_id ?? '',
+    content_hash: row.content_hash ?? '',
+    filing_type: row.filing_type as Transaction['filing_type'],
+    amendment_number: row.amendment_number,
   };
 }
 
 // ─── Schema migration ─────────────────────────────────────────────────────────
 // SqliteStore is a local, rebuildable dedup cache (not the customer-facing
-// output — that's ApifyStore/Dataset), so a pre-source_id database is simply
-// stale, not something to preserve. Detect the old schema (table exists but
-// has no source_id column, which the new INSERT/SELECT bindings require) and
-// drop it so CREATE_TABLE below recreates it with the current shape. Runs
-// automatically on every connect — no manual step.
+// output — that's ApifyStore/Dataset), so an outdated database is simply
+// stale, not something to preserve. Detect an old schema (table exists but is
+// missing a column the current INSERT/SELECT bindings require) and drop it so
+// CREATE_TABLE below recreates it with the current shape. Runs automatically
+// on every connect — no manual step.
+
+const REQUIRED_COLUMNS = ['source_id', 'content_hash', 'filing_type', 'amendment_number'];
 
 function migrateIfNeeded(db: Database.Database): void {
   const tableExists = db
@@ -78,14 +89,15 @@ function migrateIfNeeded(db: Database.Database): void {
   if (!tableExists) return;
 
   const columns = db.prepare(`PRAGMA table_info(transactions)`).all() as Array<{ name: string }>;
-  const hasSourceId = columns.some((c) => c.name === 'source_id');
-  if (hasSourceId) return;
+  const columnNames = new Set(columns.map((c) => c.name));
+  const missing = REQUIRED_COLUMNS.filter((c) => !columnNames.has(c));
+  if (missing.length === 0) return;
 
   const { n } = db.prepare('SELECT COUNT(*) as n FROM transactions').get() as { n: number };
   log.warn(
-    `Pre-source_id schema detected — dropping and rebuilding 'transactions' table ` +
-    `(${n} stale row(s) discarded; this store is a rebuildable dedup cache, ` +
-    `re-ingested from source on the next pipeline run)`,
+    `Outdated schema detected (missing: ${missing.join(', ')}) — dropping and rebuilding ` +
+    `'transactions' table (${n} stale row(s) discarded; this store is a rebuildable dedup ` +
+    `cache, re-ingested from source on the next pipeline run)`,
   );
   db.exec('DROP TABLE transactions');
 }
@@ -124,10 +136,12 @@ export class SqliteStore implements StoreAdapter {
     const insert = this.db.prepare(`
       INSERT OR IGNORE INTO transactions
         (id, politician, transaction_date, filing_date, ticker,
-         asset_name, asset_type, type, amount_min, amount_max, owner, source_id)
+         asset_name, asset_type, type, amount_min, amount_max, owner, source_id,
+         content_hash, filing_type, amendment_number)
       VALUES
         (@id, @politician, @transaction_date, @filing_date, @ticker,
-         @asset_name, @asset_type, @type, @amount_min, @amount_max, @owner, @source_id)
+         @asset_name, @asset_type, @type, @amount_min, @amount_max, @owner, @source_id,
+         @content_hash, @filing_type, @amendment_number)
     `);
 
     const saveMany = this.db.transaction((rows: Transaction[]) => {
@@ -147,6 +161,9 @@ export class SqliteStore implements StoreAdapter {
           amount_max: t.amount_max ?? null,
           owner: t.owner,
           source_id: t.source_id,
+          content_hash: t.content_hash,
+          filing_type: t.filing_type ?? null,
+          amendment_number: t.amendment_number ?? null,
         });
         inserted += info.changes;
       }

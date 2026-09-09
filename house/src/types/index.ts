@@ -14,6 +14,9 @@ export interface RawTransaction {
   amount: string;
   owner: string;
   source_id: string;
+  // Sourced from the PTR's own per-row "Filing Status: New/Amended" comment
+  // line — null when the source doesn't say. Never inferred from duplication.
+  filing_type: 'original' | 'amendment' | null;
   raw_json: Record<string, unknown>;
 }
 
@@ -32,6 +35,17 @@ export const TransactionSchema = z.object({
   amount_max: z.number().int().nonnegative().nullable(),
   owner: z.enum(['self', 'joint', 'spouse', 'child']),
   source_id: z.string().min(1),
+  // sha256 of politician|transaction_date|asset_name|type|amount_min|amount_max|owner
+  // (source_id deliberately excluded) — see utils/dedup.ts computeContentHash.
+  // Rows sharing a content_hash within the same source document are legitimate
+  // distinct tranches; rows sharing one across different documents are the
+  // same real-world transaction reported twice. We never drop rows for this —
+  // consumers decide. See README "Duplicate transactions across filings".
+  content_hash: z.string(),
+  // Sourced from the PTR's own per-row "Filing Status: New/Amended" comment
+  // line. Never inferred from duplication — null when the source doesn't say.
+  // No amendment-number equivalent exists in the House source (unlike Senate).
+  filing_type: z.enum(['original', 'amendment']).nullable(),
   created_at: z.string().optional(),
 });
 

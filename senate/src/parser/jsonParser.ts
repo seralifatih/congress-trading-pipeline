@@ -40,6 +40,10 @@ export function parseJsonSource(source: EfdSource, id: string = ''): RawTransact
     amount: str(source['amount']),
     owner: str(source['owner']),
     source_id: id || str(source['report_id']),
+    // This source shape has no filing-type field to read — genuinely
+    // unavailable here, not inferred.
+    filing_type: null,
+    amendment_number: null,
     raw_json: source,
   };
 }

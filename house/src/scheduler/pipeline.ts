@@ -2,7 +2,7 @@ import { format, subDays } from 'date-fns';
 import { fetchAllHouse } from '../fetcher/houseFetcher.js';
 import { normalizeAll } from '../transformer/normalize.js';
 import { SqliteStore } from '../store/sqliteStore.js';
-import { dedup, generateId } from '../utils/dedup.js';
+import { dedup, generateId, computeContentHash } from '../utils/dedup.js';
 import { makeLogger } from '../utils/logger.js';
 import { toErrorMessage } from '../utils/errors.js';
 import { config } from '../utils/config.js';
@@ -72,7 +72,13 @@ export async function runPipeline(
   }
 
   // ── Step 5: Assign IDs and save ─────────────────────────────────────────────
-  const withIds: Transaction[] = netNew.map((t) => ({ ...t, id: generateId(t) }));
+  // content_hash is additive — computed here, alongside id, but does not
+  // affect id's formula or inputs.
+  const withIds: Transaction[] = netNew.map((t) => ({
+    ...t,
+    id: generateId(t),
+    content_hash: computeContentHash(t),
+  }));
 
   // Regression guard: ids must be unique within this batch. A collision here
   // means two records hashed identically despite source_id being part of the
