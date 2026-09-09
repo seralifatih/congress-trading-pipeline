@@ -53,7 +53,7 @@ One row per individual transaction reported in a Senate PTR:
 
 | Field | Type | Notes |
 |---|---|---|
-| `id` | `string` | SHA-256 of the natural key (`politician\|date\|asset\|amount`) — stable dedup key |
+| `id` | `string` | SHA-256 of the natural key (`politician\|date\|asset\|amount\|source_id`) — stable dedup key |
 | `politician` | `string` | Filer name as it appears on the PTR |
 | `transaction_date` | `YYYY-MM-DD` | Trade execution date |
 | `filing_date` | `YYYY-MM-DD` | Date the PTR was submitted |

@@ -52,7 +52,7 @@ One row per individual transaction reported in a House PTR:
 
 | Field | Type | Notes |
 |---|---|---|
-| `id` | `string` | SHA-256 of `politician\|date\|asset\|amount_min\|amount_max` — stable dedup key |
+| `id` | `string` | SHA-256 of `politician\|date\|asset\|amount_min\|amount_max\|source_id` — stable dedup key |
 | `politician` | `string` | Filer name as it appears on the PTR |
 | `transaction_date` | `YYYY-MM-DD` | Trade execution date |
 | `filing_date` | `YYYY-MM-DD` | Date the PTR was submitted to the House Clerk |

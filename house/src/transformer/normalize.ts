@@ -160,6 +160,7 @@ export function normalize(raw: RawTransaction): Transaction | null {
     amount_min,
     amount_max,
     owner: normalizeOwner(raw.owner),
+    source_id: raw.source_id,
   };
 }
 

@@ -145,16 +145,13 @@ export function parseHtml(html: string): RawTransaction[] {
       return;
     }
 
-    // Derive a stable source_id from content since HTML has no Elasticsearch _id
-    const sourceId = [
-      politician,
-      cell(cells, cols.transaction_date, $),
-      cell(cells, cols.asset_name, $),
-      cell(cells, cols.amount, $),
-    ]
-      .join('|')
-      .replace(/\s+/g, ' ')
-      .trim();
+    // source_id = row ordinal within this parse, matching the primary
+    // PTR-detail parser's `${ptr_uuid}|${idx}` scheme. A content-derived key
+    // (politician+date+asset+amount) would collide on two genuinely distinct
+    // rows that share every visible field — the same defect the primary
+    // parser's source_id exists to avoid — so this must be positional, not
+    // content-based.
+    const sourceId = `html|${rowIdx}`;
 
     const raw: Record<string, unknown> = {};
     cells.each((i, el) => {

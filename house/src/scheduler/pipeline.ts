@@ -74,6 +74,18 @@ export async function runPipeline(
   // ── Step 5: Assign IDs and save ─────────────────────────────────────────────
   const withIds: Transaction[] = netNew.map((t) => ({ ...t, id: generateId(t) }));
 
+  // Regression guard: ids must be unique within this batch. A collision here
+  // means two records hashed identically despite source_id being part of the
+  // key — never silently drop or dedupe past this; fail loudly instead, since
+  // billing is per-record and a silent drop would be a billing-correctness bug.
+  const idCounts = new Map<string, number>();
+  for (const t of withIds) idCounts.set(t.id!, (idCounts.get(t.id!) ?? 0) + 1);
+  const idDupes = [...idCounts.entries()].filter(([, n]) => n > 1);
+  if (idDupes.length > 0) {
+    const detail = idDupes.map(([id, n]) => `${id} (x${n})`).join(', ');
+    throw new Error(`Duplicate transaction ids in batch — refusing to save: ${detail}`);
+  }
+
   let errors = 0;
   try {
     await store.save(withIds);

@@ -20,7 +20,7 @@ export interface RawTransaction {
 // ─── Zod schema — single source of truth for Transaction shape ────────────────
 
 export const TransactionSchema = z.object({
-  id: z.string().uuid().optional(),
+  id: z.string().optional(), // sha256 hex digest, not a UUID — see utils/dedup.ts
   politician: z.string().min(1),
   transaction_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD'),
   filing_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD'),
@@ -31,6 +31,7 @@ export const TransactionSchema = z.object({
   amount_min: z.number().int().nonnegative(),
   amount_max: z.number().int().nonnegative().nullable(),
   owner: z.enum(['self', 'joint', 'spouse', 'child']),
+  source_id: z.string().min(1),
   created_at: z.string().optional(),
 });
 

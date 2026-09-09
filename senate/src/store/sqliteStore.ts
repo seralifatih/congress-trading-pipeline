@@ -23,6 +23,7 @@ const CREATE_TABLE = `
     amount_min      INTEGER,
     amount_max      INTEGER,
     owner           TEXT,
+    source_id       TEXT NOT NULL,
     inserted_at     TEXT DEFAULT (datetime('now'))
   )
 `;
@@ -41,6 +42,7 @@ interface TransactionRow {
   amount_min: number | null;
   amount_max: number | null;
   owner: string | null;
+  source_id: string | null;
   inserted_at: string;
 }
 
@@ -57,7 +59,35 @@ function rowToTransaction(row: TransactionRow): Transaction {
     amount_min: row.amount_min ?? 0,
     amount_max: row.amount_max ?? null,
     owner: (row.owner ?? 'self') as Transaction['owner'],
+    source_id: row.source_id ?? '',
   };
+}
+
+// ─── Schema migration ─────────────────────────────────────────────────────────
+// SqliteStore is a local, rebuildable dedup cache (not the customer-facing
+// output — that's ApifyStore/Dataset), so a pre-source_id database is simply
+// stale, not something to preserve. Detect the old schema (table exists but
+// has no source_id column, which the new INSERT/SELECT bindings require) and
+// drop it so CREATE_TABLE below recreates it with the current shape. Runs
+// automatically on every connect — no manual step.
+
+function migrateIfNeeded(db: Database.Database): void {
+  const tableExists = db
+    .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'transactions'`)
+    .get();
+  if (!tableExists) return;
+
+  const columns = db.prepare(`PRAGMA table_info(transactions)`).all() as Array<{ name: string }>;
+  const hasSourceId = columns.some((c) => c.name === 'source_id');
+  if (hasSourceId) return;
+
+  const { n } = db.prepare('SELECT COUNT(*) as n FROM transactions').get() as { n: number };
+  log.warn(
+    `Pre-source_id schema detected — dropping and rebuilding 'transactions' table ` +
+    `(${n} stale row(s) discarded; this store is a rebuildable dedup cache, ` +
+    `re-ingested from source on the next pipeline run)`,
+  );
+  db.exec('DROP TABLE transactions');
 }
 
 // ─── SqliteStore ──────────────────────────────────────────────────────────────
@@ -70,6 +100,7 @@ export class SqliteStore implements StoreAdapter {
     this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
+    migrateIfNeeded(this.db);
     this.db.exec(CREATE_TABLE);
     log.info(`Connected to ${dbPath}`);
   }
@@ -93,10 +124,10 @@ export class SqliteStore implements StoreAdapter {
     const insert = this.db.prepare(`
       INSERT OR IGNORE INTO transactions
         (id, politician, transaction_date, filing_date, ticker,
-         asset_name, asset_type, type, amount_min, amount_max, owner)
+         asset_name, asset_type, type, amount_min, amount_max, owner, source_id)
       VALUES
         (@id, @politician, @transaction_date, @filing_date, @ticker,
-         @asset_name, @asset_type, @type, @amount_min, @amount_max, @owner)
+         @asset_name, @asset_type, @type, @amount_min, @amount_max, @owner, @source_id)
     `);
 
     const saveMany = this.db.transaction((rows: Transaction[]) => {
@@ -115,6 +146,7 @@ export class SqliteStore implements StoreAdapter {
           amount_min: t.amount_min,
           amount_max: t.amount_max ?? null,
           owner: t.owner,
+          source_id: t.source_id,
         });
         inserted += info.changes;
       }

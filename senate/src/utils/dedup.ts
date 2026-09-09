@@ -2,7 +2,12 @@ import { createHash } from 'crypto';
 import type { RawTransaction, Transaction } from '../types/index.js';
 
 // ─── Dedup key ────────────────────────────────────────────────────────────────
-// Per CLAUDE.md: politician + transaction_date + asset_name + amount
+// Per CLAUDE.md: politician + transaction_date + asset_name + amount, PLUS
+// source_id (filing/report id + row ordinal within it). A single PTR can
+// legitimately contain multiple line items that are identical on every
+// other field (e.g. a spouse's structured note purchased in two tranches
+// on the same day) — those are distinct real transactions, not duplicates,
+// so source_id is required to keep the key (and the derived id) unique.
 // amount_max can be null ("Over $X"), coerce to empty string so key stays stable.
 
 export function dedupKey(t: Transaction): string {
@@ -12,6 +17,7 @@ export function dedupKey(t: Transaction): string {
     t.asset_name.toLowerCase().trim(),
     String(t.amount_min),
     t.amount_max === null ? '' : String(t.amount_max),
+    t.source_id,
   ].join('|');
 }
 
