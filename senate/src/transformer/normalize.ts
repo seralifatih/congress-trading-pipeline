@@ -164,6 +164,9 @@ export function normalize(raw: RawTransaction): Transaction | null {
     content_hash: '', // filled in by pipeline.ts alongside id, once amount_min/max etc. are final
     filing_type: raw.filing_type,
     amendment_number: raw.amendment_number,
+    fetchedAt: '',      // filled in by pipeline.ts — first-seen or carried forward on revision
+    lastModifiedAt: '', // filled in by pipeline.ts
+    revisionCount: 0,   // filled in by pipeline.ts
   };
 }
 

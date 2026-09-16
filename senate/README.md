@@ -28,7 +28,10 @@ One row per individual transaction reported in a Senate PTR:
   "source_id": "257795ae-e1b2-411d-b562-8fe4c2a4f2a1|6",
   "content_hash": "7c2e5b8d4f6a0c9e3b7d1fa3f9c1e2b8d47f60a1c5e93b2d8f7a4c6e0b1d9f3a",
   "filing_type": "original",
-  "amendment_number": null
+  "amendment_number": null,
+  "fetchedAt": "2026-03-20T18:04:11.000Z",
+  "lastModifiedAt": "2026-03-20T18:04:11.000Z",
+  "revisionCount": 0
 }
 ```
 
@@ -49,6 +52,9 @@ One row per individual transaction reported in a Senate PTR:
 | `content_hash` | `string` | SHA-256 of `politician\|date\|asset\|type\|amount_min\|amount_max\|owner` — deliberately excludes `source_id`. See "Duplicate transactions across filings" below |
 | `filing_type` | `'original' \| 'amendment' \| null` | Read from the PTR's own "(Amendment N)" label. `null` only when the source page didn't expose a label — never guessed from duplication |
 | `amendment_number` | `integer \| null` | The N in "(Amendment N)". `null` for originals and for anything the source doesn't label |
+| `fetchedAt` | `string` (ISO 8601 UTC) | When this row was first pulled from source. Immutable — never updated by a later re-fetch of the same, unchanged row. See "Fetch timestamps and immutable history" below |
+| `lastModifiedAt` | `string` (ISO 8601 UTC) | When this row's content last changed. Equal to `fetchedAt` until a revision is detected |
+| `revisionCount` | `integer` | How many times this source row's content has changed since it was first seen. `0` for a row that has never been revised |
 
 Same core schema as the House actor — records from both merge cleanly
 on field names and dedup semantics. `amendment_number` is Senate-only;
@@ -100,6 +106,39 @@ To group: `key = content_hash`, then inspect the `source_id` prefix
 prefix means same document (keep all), different prefixes mean
 different documents (your call on which to count).
 
+### Fetch timestamps and immutable history
+
+Source data isn't static. The Senate eFD system can revise a PTR after
+it's initially posted — the office refiles a corrected amount, fixes a
+typo in the asset name, whatever the reason. When that happens, the
+row you pulled last week and the row you'd pull today can describe the
+same trade with different values, and nothing on the Senate's side
+flags that it happened.
+
+`fetchedAt` and `lastModifiedAt` exist so that revision is dateable
+instead of invisible:
+
+- **`fetchedAt`** is set once, the first time this row is pulled, and
+  never changes after that — not even across a revision. It answers
+  "when did I first learn this row exists."
+- **`lastModifiedAt`** tracks when the row's content last changed.
+  It equals `fetchedAt` until the source revises the row, at which
+  point it moves to the revision's fetch time.
+- **`revisionCount`** counts how many times that's happened.
+
+Rows are never overwritten in place — a revision lands as a new row
+(with its own new `id`, since amount/date/asset feed the id's hash)
+that carries `fetchedAt` forward from the prior version. Both the old
+and new version stay in the dataset, so the history is additive, not
+destructive.
+
+**How to use it:** keep your own snapshot of a prior pull (a plain
+export is enough) and diff it against a fresh one. Where two rows
+share `source_id` but differ in `content_hash`, `lastModifiedAt` tells
+you exactly when the value you were relying on changed — turning a
+silent discrepancy into a dated one you can trace back through a
+backtest or an alert history.
+
 ---
 
 ## How it works
@@ -130,7 +169,10 @@ is hashed to a stable SHA-256 ID, so re-running over an overlapping
 date window will not produce duplicate rows from the same source
 document. A separate `content_hash` (source_id excluded) lets you spot
 the same real-world trade reported across two different documents —
-see "Duplicate transactions across filings" above.
+see "Duplicate transactions across filings" above. If a row's
+`source_id` was seen before with a different `content_hash`, it's
+logged as a revision and `revisionCount`/`lastModifiedAt` are updated
+accordingly — see "Fetch timestamps and immutable history" above.
 
 **5. Store.** Records land in the default Apify dataset, queryable
 via the Apify API or exportable as JSON, CSV, or Excel.

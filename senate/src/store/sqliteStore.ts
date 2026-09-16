@@ -27,6 +27,9 @@ const CREATE_TABLE = `
     content_hash    TEXT NOT NULL,
     filing_type     TEXT,
     amendment_number INTEGER,
+    fetchedAt       TEXT NOT NULL,
+    lastModifiedAt  TEXT NOT NULL,
+    revisionCount   INTEGER NOT NULL DEFAULT 0,
     inserted_at     TEXT DEFAULT (datetime('now'))
   )
 `;
@@ -49,6 +52,9 @@ interface TransactionRow {
   content_hash: string | null;
   filing_type: string | null;
   amendment_number: number | null;
+  fetchedAt: string;
+  lastModifiedAt: string;
+  revisionCount: number;
   inserted_at: string;
 }
 
@@ -69,6 +75,9 @@ function rowToTransaction(row: TransactionRow): Transaction {
     content_hash: row.content_hash ?? '',
     filing_type: row.filing_type as Transaction['filing_type'],
     amendment_number: row.amendment_number,
+    fetchedAt: row.fetchedAt,
+    lastModifiedAt: row.lastModifiedAt,
+    revisionCount: row.revisionCount ?? 0,
   };
 }
 
@@ -80,7 +89,10 @@ function rowToTransaction(row: TransactionRow): Transaction {
 // CREATE_TABLE below recreates it with the current shape. Runs automatically
 // on every connect — no manual step.
 
-const REQUIRED_COLUMNS = ['source_id', 'content_hash', 'filing_type', 'amendment_number'];
+const REQUIRED_COLUMNS = [
+  'source_id', 'content_hash', 'filing_type', 'amendment_number',
+  'fetchedAt', 'lastModifiedAt', 'revisionCount',
+];
 
 function migrateIfNeeded(db: Database.Database): void {
   const tableExists = db
@@ -137,11 +149,11 @@ export class SqliteStore implements StoreAdapter {
       INSERT OR IGNORE INTO transactions
         (id, politician, transaction_date, filing_date, ticker,
          asset_name, asset_type, type, amount_min, amount_max, owner, source_id,
-         content_hash, filing_type, amendment_number)
+         content_hash, filing_type, amendment_number, fetchedAt, lastModifiedAt, revisionCount)
       VALUES
         (@id, @politician, @transaction_date, @filing_date, @ticker,
          @asset_name, @asset_type, @type, @amount_min, @amount_max, @owner, @source_id,
-         @content_hash, @filing_type, @amendment_number)
+         @content_hash, @filing_type, @amendment_number, @fetchedAt, @lastModifiedAt, @revisionCount)
     `);
 
     const saveMany = this.db.transaction((rows: Transaction[]) => {
@@ -164,6 +176,9 @@ export class SqliteStore implements StoreAdapter {
           content_hash: t.content_hash,
           filing_type: t.filing_type ?? null,
           amendment_number: t.amendment_number ?? null,
+          fetchedAt: t.fetchedAt,
+          lastModifiedAt: t.lastModifiedAt,
+          revisionCount: t.revisionCount,
         });
         inserted += info.changes;
       }

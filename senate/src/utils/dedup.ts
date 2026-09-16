@@ -64,6 +64,28 @@ export function dedup(incoming: Transaction[], existing: Transaction[]): Transac
   return incoming.filter((t) => !existingKeys.has(dedupKey(t)));
 }
 
+// ─── Revision lookup ──────────────────────────────────────────────────────────
+// Keyed by source_id (document + row ordinal), NOT by the dedup key or id —
+// amount/date/asset are inputs to both of those, so a content revision on the
+// same source_id produces a different dedup key and a different id by
+// construction. This is the only way to recognize "the source revised this
+// exact row" rather than seeing it as an unrelated new row.
+//
+// Last-write-wins per source_id: if a source_id has produced more than one
+// prior row (successive revisions), the most recently fetched one is the
+// correct baseline to diff the incoming row against.
+
+export function latestBySourceId(existing: Transaction[]): Map<string, Transaction> {
+  const map = new Map<string, Transaction>();
+  for (const t of existing) {
+    const prior = map.get(t.source_id);
+    if (!prior || (t.fetchedAt ?? '') >= (prior.fetchedAt ?? '')) {
+      map.set(t.source_id, t);
+    }
+  }
+  return map;
+}
+
 // ─── Legacy helper (kept for store/interface.ts compatibility) ────────────────
 
 export function filterNewTrades(

@@ -13,7 +13,10 @@
       "owner",
       "id",
       "source_id",
-      "content_hash"
+      "content_hash",
+      "fetchedAt",
+      "lastModifiedAt",
+      "revisionCount"
     ],
     "properties": {
       "id": {
@@ -40,6 +43,24 @@
         "description": "Read from the PTR's own per-row \"Filing Status: New/Amended\" line. Null only when that line is missing — never inferred from duplicate documents.",
         "enum": ["original", "amendment", null],
         "example": "original"
+      },
+      "fetchedAt": {
+        "type": "string",
+        "title": "Fetched at",
+        "description": "ISO 8601 UTC timestamp of when this row was first pulled from source. Immutable once set — a re-fetch of an unchanged row never updates it. If the source later revises this filing row, the new row carries this timestamp forward from the prior version, so 'first seen' survives the revision.",
+        "example": "2026-04-20T14:32:07.000Z"
+      },
+      "lastModifiedAt": {
+        "type": "string",
+        "title": "Last modified at",
+        "description": "ISO 8601 UTC timestamp of when this row's content was last observed to change. Equals fetchedAt for a first-seen row.",
+        "example": "2026-04-20T14:32:07.000Z"
+      },
+      "revisionCount": {
+        "type": "integer",
+        "title": "Revision count",
+        "description": "Number of content revisions detected for this source document/row lineage. 0 for a first-seen row; incremented each time the source republishes this row with different content.",
+        "example": 0
       },
       "politician": {
         "type": "string",
@@ -174,7 +195,10 @@
           "owner",
           "source_id",
           "content_hash",
-          "filing_type"
+          "filing_type",
+          "fetchedAt",
+          "lastModifiedAt",
+          "revisionCount"
         ]
       },
       "display": {

@@ -51,7 +51,10 @@ One row per individual transaction reported in a Senate PTR:
   "source_id": "257795ae-e1b2-411d-b562-8fe4c2a4f2a1|6",
   "content_hash": "7c2e5b8d4f6a0c9e3b7d1fa3f9c1e2b8d47f60a1c5e93b2d8f7a4c6e0b1d9f3a",
   "filing_type": "original",
-  "amendment_number": null
+  "amendment_number": null,
+  "fetchedAt": "2026-03-20T18:04:11.000Z",
+  "lastModifiedAt": "2026-03-20T18:04:11.000Z",
+  "revisionCount": 0
 }
 ```
 
@@ -72,6 +75,9 @@ One row per individual transaction reported in a Senate PTR:
 | `content_hash` | `string` | SHA-256 of `politician\|date\|asset\|type\|amount_min\|amount_max\|owner` (source_id excluded) — see "Duplicate transactions across filings" below |
 | `filing_type` | `'original' \| 'amendment' \| null` | Read from the PTR's "(Amendment N)" label. `null` only when unlabeled — never guessed |
 | `amendment_number` | `integer \| null` | The N in "(Amendment N)"; `null` for originals |
+| `fetchedAt` | `string` (ISO 8601 UTC) | When this row was first pulled from source. Immutable — never updated by a later re-fetch of the same, unchanged row |
+| `lastModifiedAt` | `string` (ISO 8601 UTC) | When this row's content last changed. Equal to `fetchedAt` until a revision is detected |
+| `revisionCount` | `integer` | How many times this source row's content has changed since it was first seen. `0` if never revised |
 
 Same core schema as the House actor — records from both merge cleanly
 on field names and dedup semantics. `amendment_number` is Senate-only.
@@ -101,6 +107,22 @@ both. Versus: the same 12 transactions appearing in two *separate* PTR
 documents filed the same day — same `content_hash`, different
 `source_id` prefixes; summing all 24 rows double-counts every trade.
 
+### Fetch timestamps and immutable history
+
+The Senate eFD system can revise a PTR after it's first posted — a
+corrected amount, a fixed typo — with nothing on the source side
+flagging that it happened. `fetchedAt` is set once, the first time a
+row is pulled, and never changes after that, even across a revision.
+`lastModifiedAt` moves to the revision's fetch time when the source
+republishes a row with different content, and `revisionCount` counts
+how many times that's happened. Rows are never overwritten in place —
+a revision lands as a new row that carries `fetchedAt` forward from
+the prior version, so both stay in the dataset.
+
+To use it: keep a snapshot of a prior pull and diff it against a fresh
+one. Where two rows share `source_id` but differ in `content_hash`,
+`lastModifiedAt` tells you when the value changed.
+
 ---
 
 ## How it works
@@ -127,8 +149,10 @@ amount ranges, dates, and owner categories map to the canonical
 schema shared with the House actor.
 
 **4. Dedup + push.** The natural key is hashed to a stable ID;
-duplicates across overlapping runs are dropped; records land in the
-default Apify dataset.
+duplicates across overlapping runs are dropped; a same-`source_id` row
+with a changed `content_hash` is logged as a revision and its
+`revisionCount`/`lastModifiedAt` updated; records land in the default
+Apify dataset.
 
 All HTTP calls retry 3 times with exponential backoff and ±25% jitter.
 

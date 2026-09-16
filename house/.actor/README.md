@@ -49,7 +49,10 @@ One row per individual transaction reported in a House PTR:
   "owner": "self",
   "source_id": "house_20034201_0",
   "content_hash": "9e5d3296a3f9c1e2b8d47f60a1c5e93b2d8f7a4c6e0b1d9f3a7c2e5b8d4f6a0c",
-  "filing_type": "original"
+  "filing_type": "original",
+  "fetchedAt": "2026-03-31T09:12:44.000Z",
+  "lastModifiedAt": "2026-03-31T09:12:44.000Z",
+  "revisionCount": 0
 }
 ```
 
@@ -69,6 +72,9 @@ One row per individual transaction reported in a House PTR:
 | `source_id` | `string` | Source PTR's DocID + row ordinal (`house_<DocID>_<row_index>`) |
 | `content_hash` | `string` | SHA-256 of `politician\|date\|asset\|type\|amount_min\|amount_max\|owner` (source_id excluded) — see "Duplicate transactions across filings" below |
 | `filing_type` | `'original' \| 'amendment' \| null` | Read from the PTR's own per-row "Filing Status: New/Amended" line. `null` when that line is missing — never guessed. No amendment-number equivalent exists in this source |
+| `fetchedAt` | `string` (ISO 8601 UTC) | When this row was first pulled from source. Immutable — never updated by a later re-fetch of the same, unchanged row |
+| `lastModifiedAt` | `string` (ISO 8601 UTC) | When this row's content last changed. Equal to `fetchedAt` until a revision is detected |
+| `revisionCount` | `integer` | How many times this source row's content has changed since it was first seen. `0` if never revised |
 
 ### Duplicate transactions across filings
 
@@ -82,6 +88,22 @@ different ids if it's reported in more than one source document.
 prefix) sharing a `content_hash` is a legitimate separate transaction
 — keep both. Different documents sharing one is the same trade
 reported more than once — summing both double-counts it.
+
+### Fetch timestamps and immutable history
+
+The House Clerk system can revise a PTR after it's first posted, with
+nothing in the source flagging that it happened. `fetchedAt` is set
+once, the first time a row is pulled, and never changes after that,
+even across a revision. `lastModifiedAt` moves to the revision's fetch
+time when the source republishes a row with different content, and
+`revisionCount` counts how many times that's happened. Rows are never
+overwritten in place — a revision lands as a new row that carries
+`fetchedAt` forward from the prior version, so both stay in the
+dataset.
+
+To use it: keep a snapshot of a prior pull and diff it against a fresh
+one. Where two rows share `source_id` but differ in `content_hash`,
+`lastModifiedAt` tells you when the value changed.
 
 ---
 
@@ -113,7 +135,7 @@ reported more than once — summing both double-counts it.
 
 **5. Marker-anchored parsing.** Each transaction row in the PDF includes a `(TICKER) [TYPE]` marker. The parser anchors on these markers, walks backward for the asset name, forward for the transaction details, and emits one record per marker.
 
-**6. Normalize + dedup + push.** Map source codes (`P`/`S`/`S (partial)`, `SP`/`DC`/`JT`) to the canonical schema, hash the natural key for dedup, push to the default Apify dataset.
+**6. Normalize + dedup + push.** Map source codes (`P`/`S`/`S (partial)`, `SP`/`DC`/`JT`) to the canonical schema, hash the natural key for dedup, push to the default Apify dataset. A same-`source_id` row with a changed `content_hash` is logged as a revision and its `revisionCount`/`lastModifiedAt` updated — see "Fetch timestamps and immutable history" above.
 
 Older filings filed on paper produce scanned-image PDFs that `pdf-parse` can't extract from. The parser logs them as unparseable and continues — about 5% of historical PTRs. OCR fallback is on the Phase 2 list.
 

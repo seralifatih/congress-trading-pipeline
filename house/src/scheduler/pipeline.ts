@@ -2,7 +2,7 @@ import { format, subDays } from 'date-fns';
 import { fetchAllHouse } from '../fetcher/houseFetcher.js';
 import { normalizeAll } from '../transformer/normalize.js';
 import { SqliteStore } from '../store/sqliteStore.js';
-import { dedup, generateId, computeContentHash } from '../utils/dedup.js';
+import { dedup, generateId, computeContentHash, latestBySourceId } from '../utils/dedup.js';
 import { makeLogger } from '../utils/logger.js';
 import { toErrorMessage } from '../utils/errors.js';
 import { config } from '../utils/config.js';
@@ -71,14 +71,49 @@ export async function runPipeline(
     return { inserted: 0, skipped, errors: 0 };
   }
 
-  // ── Step 5: Assign IDs and save ─────────────────────────────────────────────
+  // ── Step 5: Assign IDs, fetch/revision metadata, and save ───────────────────
   // content_hash is additive — computed here, alongside id, but does not
   // affect id's formula or inputs.
-  const withIds: Transaction[] = netNew.map((t) => ({
-    ...t,
-    id: generateId(t),
-    content_hash: computeContentHash(t),
-  }));
+  //
+  // fetchedAt/lastModifiedAt/revisionCount are keyed off source_id (not the
+  // dedup key or id, both of which change when content changes). A prior row
+  // sharing source_id but a different content_hash means the source revised
+  // this exact filing row — carry fetchedAt forward from that prior row so
+  // "first seen" survives the revision, bump lastModifiedAt to now, and
+  // increment revisionCount. No prior source_id match means a genuinely new
+  // row: fetchedAt = lastModifiedAt = now, revisionCount = 0.
+  const priorBySourceId = latestBySourceId(existing);
+  const now = new Date().toISOString();
+
+  const withIds: Transaction[] = netNew.map((t) => {
+    const content_hash = computeContentHash(t);
+    const prior = priorBySourceId.get(t.source_id);
+
+    if (prior && prior.content_hash !== content_hash) {
+      log.warn(
+        `Revision detected: source_id="${t.source_id}" politician="${t.politician}" ` +
+        `content_hash ${prior.content_hash} -> ${content_hash} ` +
+        `(revision #${(prior.revisionCount ?? 0) + 1})`,
+      );
+      return {
+        ...t,
+        id: generateId(t),
+        content_hash,
+        fetchedAt: prior.fetchedAt ?? now,
+        lastModifiedAt: now,
+        revisionCount: (prior.revisionCount ?? 0) + 1,
+      };
+    }
+
+    return {
+      ...t,
+      id: generateId(t),
+      content_hash,
+      fetchedAt: now,
+      lastModifiedAt: now,
+      revisionCount: 0,
+    };
+  });
 
   // Regression guard: ids must be unique within this batch. A collision here
   // means two records hashed identically despite source_id being part of the

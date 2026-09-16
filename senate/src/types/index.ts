@@ -49,6 +49,21 @@ export const TransactionSchema = z.object({
   filing_type: z.enum(['original', 'amendment']).nullable(),
   // Senate only: the N in "(Amendment N)". No equivalent exists on House.
   amendment_number: z.number().int().positive().nullable().optional(),
+  // ISO 8601 UTC timestamp — when this row (this exact id) was first pulled
+  // from source. Set once at insert and never touched again; a re-fetch of
+  // an unchanged row is dropped by dedup() before it would overwrite this.
+  // If a same-source_id row later changes content (a revision), the new
+  // row gets a new id (amount/date/asset feed id's hash) but carries this
+  // timestamp forward from the prior source_id match — see lastModifiedAt.
+  fetchedAt: z.string(),
+  // ISO 8601 UTC timestamp — when this row's content was last observed to
+  // change. Equals fetchedAt for a first-seen row; bumped to "now" only when
+  // a same-source_id row's content_hash differs from the prior one.
+  lastModifiedAt: z.string(),
+  // Count of detected content revisions for this source_id lineage. 0 for
+  // first-seen; incremented each time a same-source_id row's content_hash
+  // differs from the immediately prior one. See utils/dedup.ts.
+  revisionCount: z.number().int().nonnegative(),
   created_at: z.string().optional(),
 });
 

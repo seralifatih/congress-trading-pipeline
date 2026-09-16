@@ -49,7 +49,10 @@ One row per individual transaction reported in a House PTR:
   "owner": "self",
   "source_id": "house_20034201_0",
   "content_hash": "9e5d3296a3f9c1e2b8d47f60a1c5e93b2d8f7a4c6e0b1d9f3a7c2e5b8d4f6a0c",
-  "filing_type": "original"
+  "filing_type": "original",
+  "fetchedAt": "2026-03-31T09:12:44.000Z",
+  "lastModifiedAt": "2026-03-31T09:12:44.000Z",
+  "revisionCount": 0
 }
 ```
 
@@ -69,6 +72,9 @@ One row per individual transaction reported in a House PTR:
 | `source_id` | `string` | Source PTR's DocID + row ordinal (`house_<DocID>_<row_index>`) |
 | `content_hash` | `string` | SHA-256 of `politician\|date\|asset\|type\|amount_min\|amount_max\|owner` (source_id excluded) — see "Duplicate transactions across filings" below |
 | `filing_type` | `'original' \| 'amendment' \| null` | Read from the PTR's own per-row "Filing Status: New/Amended" line. `null` only when that line is missing or unrecognized — never guessed from duplication. No amendment-number equivalent exists in this source (unlike Senate) |
+| `fetchedAt` | `string` (ISO 8601 UTC) | When this row was first pulled from source. Immutable — never updated by a later re-fetch of the same, unchanged row. See "Fetch timestamps and immutable history" below |
+| `lastModifiedAt` | `string` (ISO 8601 UTC) | When this row's content last changed. Equal to `fetchedAt` until a revision is detected |
+| `revisionCount` | `integer` | How many times this source row's content has changed since it was first seen. `0` if never revised |
 
 ### Duplicate transactions across filings
 
@@ -89,6 +95,29 @@ find them.
   that re-lists a transaction from the original filing. Summing across
   both double-counts it — reconcile by `content_hash` before
   aggregating.
+
+### Fetch timestamps and immutable history
+
+The House Clerk system can revise a PTR after it's first posted — the
+Clerk refiles a corrected page, or a re-scan replaces a garbled PDF —
+with nothing in the source flagging that it happened. `fetchedAt` and
+`lastModifiedAt` exist so a revision is dateable instead of invisible.
+
+- **`fetchedAt`** is set once, the first time a row is pulled, and
+  never changes after that — not even across a revision.
+- **`lastModifiedAt`** tracks when the row's content last changed. It
+  equals `fetchedAt` until the source republishes the row with
+  different content.
+- **`revisionCount`** counts how many times that's happened.
+
+Rows are never overwritten in place — a revision lands as a new row
+(new `id`, since amount/date/asset feed the id's hash) that carries
+`fetchedAt` forward from the prior version. Both stay in the dataset.
+
+**How to use it:** keep a snapshot of a prior pull and diff it against
+a fresh one. Where two rows share `source_id` but differ in
+`content_hash`, `lastModifiedAt` tells you exactly when the value you
+were relying on changed.
 
 ---
 
@@ -120,7 +149,7 @@ find them.
 
 **5. Marker-anchored parsing.** Each transaction row in the PDF includes a `(TICKER) [TYPE]` marker. The parser anchors on these markers, walks backward for the asset name, forward for the transaction details, and emits one record per marker.
 
-**6. Normalize + dedup + push.** Map source codes (`P`/`S`/`S (partial)`, `SP`/`DC`/`JT`) to the canonical schema, hash the natural key (including `source_id`) for a stable per-row `id`, push to the default Apify dataset. A separate `content_hash` (source_id excluded) lets you spot the same real-world trade reported across two different PTR documents — see "Duplicate transactions across filings" above.
+**6. Normalize + dedup + push.** Map source codes (`P`/`S`/`S (partial)`, `SP`/`DC`/`JT`) to the canonical schema, hash the natural key (including `source_id`) for a stable per-row `id`, push to the default Apify dataset. A separate `content_hash` (source_id excluded) lets you spot the same real-world trade reported across two different PTR documents — see "Duplicate transactions across filings" above. A same-`source_id` row with a changed `content_hash` is logged as a revision and its `revisionCount`/`lastModifiedAt` updated — see "Fetch timestamps and immutable history" above.
 
 Older filings filed on paper produce scanned-image PDFs that `pdf-parse` can't extract from. The parser logs them as unparseable and continues — about 5% of historical PTRs. OCR fallback is on the Phase 2 list.
 
