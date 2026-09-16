@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-09-16
+
+### Added
+- **`fetchedAt`** field (ISO 8601 UTC) on every Senate and House transaction: the timestamp this row was first pulled from source. Set once at insert and never overwritten by a later re-fetch of an unchanged row.
+- **`lastModifiedAt`** field (ISO 8601 UTC): when this row's content was last observed to change. Equal to `fetchedAt` for a first-seen row.
+- **`revisionCount`** field (integer, ≥0): how many times a source document/row has been observed to change content since it was first seen. `0` for a row that's never been revised.
+- Revision detection: on each pipeline run, incoming rows are matched against prior rows by `source_id` (not by `id` or the dedup key — both change when content changes, so they can't detect a revision on their own). A `source_id` match with a different `content_hash` is logged as a revision; the new row carries `fetchedAt` forward from the prior version, sets `lastModifiedAt` to now, and increments `revisionCount`. Storage is append-only (Apify Datasets have no update-by-id API), so both the old and new versions of a revised row remain in the dataset — nothing is overwritten in place.
+- SQLite schema: `fetchedAt`, `lastModifiedAt`, `revisionCount` columns (both packages), covered by the existing automatic old-schema migration — no manual step.
+- Apify dataset schema (`dataset_schema.json`): added `fetchedAt`, `lastModifiedAt`, `revisionCount` field definitions and added them to the "full record" view.
+- Both READMEs (repo + `.actor`): new "Fetch timestamps and immutable history" section explaining why the fields exist and how to diff a prior pull against a fresh one to date a source revision.
+
+### Why
+A source can revise an already-published filing (a corrected amount, a re-filed page) with no signal that it happened — the row just silently changes on the next fetch. `fetchedAt`/`lastModifiedAt`/`revisionCount` turn that from an invisible discrepancy into a dated one: a consumer diffing their own archive against a fresh pull can see not just that a row changed, but when.
+
+### Changed
+- Both actors bumped `0.2.0` → `0.3.0` (additive schema fields only — no changes to `id` or `content_hash` formulas).
+
 ## [lobbying-overlap 0.1.0] - 2026-09-09
 
 ### Added
@@ -62,6 +79,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Congress Lobbying × Trades Overlap pipeline: joins House and Senate trade data with federal lobbying disclosures (LDA) by member, quarter, and sector.
 - Hosted actors published on Apify: `congress-trading-pipeline` (Senate), `congress-trading-pipeline-1` (House), `congress-lobbying-trades-overlap`.
 
+[1.2.0]: https://github.com/seralifatih/congress-trading-pipeline/releases/tag/v1.2.0
 [lobbying-overlap 0.1.0]: https://github.com/seralifatih/congress-trading-pipeline/releases/tag/lobbying-overlap-v0.1.0
 [1.1.0]: https://github.com/seralifatih/congress-trading-pipeline/releases/tag/v1.1.0
 [1.0.0]: https://github.com/seralifatih/congress-trading-pipeline/releases/tag/v1.0.0
