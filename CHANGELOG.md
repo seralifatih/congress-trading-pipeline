@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-09-23
+
+### Fixed
+- House API (`/api/transactions`, `/api/debug`) no longer returns `scanned_unparsed` placeholder rows, so the frontend never gets a `trade_type: null` Signal. The rows are still in the dataset and the SQLite store.
+
+### Changed
+- House actor bumped `0.4.0` → `0.4.1`. Senate is unchanged.
+
 ## [1.3.0] - 2026-09-23
 
 ### Fixed
@@ -97,6 +105,7 @@ A source can revise an already-published filing (a corrected amount, a re-filed 
 - Congress Lobbying × Trades Overlap pipeline: joins House and Senate trade data with federal lobbying disclosures (LDA) by member, quarter, and sector.
 - Hosted actors published on Apify: `congress-trading-pipeline` (Senate), `congress-trading-pipeline-1` (House), `congress-lobbying-trades-overlap`.
 
+[1.3.1]: https://github.com/seralifatih/congress-trading-pipeline/releases/tag/v1.3.1
 [1.3.0]: https://github.com/seralifatih/congress-trading-pipeline/releases/tag/v1.3.0
 [1.2.0]: https://github.com/seralifatih/congress-trading-pipeline/releases/tag/v1.2.0
 [lobbying-overlap 0.1.0]: https://github.com/seralifatih/congress-trading-pipeline/releases/tag/lobbying-overlap-v0.1.0
