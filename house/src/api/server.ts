@@ -198,7 +198,7 @@ export function createApp(): express.Application {
     try {
       const store = SqliteStore.getInstance();
       const count = store.count();
-      const sample = await store.query({ limit: 2 });
+      const sample = await store.query({ limit: 2, parse_status: 'ok' });
       res.json({
         quiverKeySet: !!process.env['QUIVER_API_KEY'],
         rawCount: count,
@@ -227,7 +227,9 @@ export function createApp(): express.Application {
 
     try {
       const store = SqliteStore.getInstance();
-      const rows = await store.query(parsed.data);
+      // Scanned placeholder rows have null trade fields the frontend's Signal
+      // shape doesn't allow — keep them out of the API; they stay in the dataset.
+      const rows = await store.query({ ...parsed.data, parse_status: 'ok' });
       res.json({ data: rows.map(serialize), count: rows.length });
     } catch (err) {
       res.status(500).json({ error: toErrorMessage(err) });

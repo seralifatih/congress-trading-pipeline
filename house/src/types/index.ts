@@ -102,6 +102,7 @@ export interface QueryFilters {
   date_to?: string;    // YYYY-MM-DD inclusive
   type?: 'buy' | 'sell' | 'exchange';
   owner?: 'self' | 'joint' | 'spouse' | 'child';
+  parse_status?: 'ok' | 'scanned_unparsed';
   limit?: number;
   offset?: number;
 }

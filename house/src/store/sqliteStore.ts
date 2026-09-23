@@ -212,6 +212,10 @@ export class SqliteStore implements StoreAdapter {
       conditions.push('owner = @owner');
       params['owner'] = filters.owner;
     }
+    if (filters.parse_status) {
+      conditions.push('parse_status = @parse_status');
+      params['parse_status'] = filters.parse_status;
+    }
     if (filters.date_from) {
       conditions.push('transaction_date >= @date_from');
       params['date_from'] = filters.date_from;
