@@ -1,6 +1,6 @@
 # Congress Trading Pipeline
 
-A Congress data suite that pulls U.S. congressional stock trading disclosures and federal lobbying disclosures — required by the STOCK Act and the Lobbying Disclosure Act, respectively — directly from the official government sources and delivers clean, deduplicated JSON, plus a records product that joins the two. No third-party aggregators, no subscription, public domain data.
+A Congress data suite that pulls U.S. congressional stock trading disclosures and federal lobbying disclosures — required by the STOCK Act and the Lobbying Disclosure Act, respectively — directly from the official government sources and delivers clean, deduplicated JSON, plus a records product that joins the two. No third-party aggregators, no subscription.
 
 ---
 
@@ -41,6 +41,36 @@ The Senate and House pipelines emit slightly different field names. If you consu
 A unified cross-chamber schema is on the Phase 2 list.
 
 **`lobbying-overlap/` does not share this schema.** It reads both trade actors' output internally, normalizes it, and emits a different record shape — one row per `(member, quarter, sector)` overlap, bundling the matched trades and lobbying filings as evidence arrays rather than one row per transaction. See its [README](./lobbying-overlap/README.md#what-it-produces) for the output schema.
+
+---
+
+## Use with Claude, Cursor, or any MCP client
+
+Add this URL as an MCP server to give your AI agent direct access to both actors:
+
+```text
+https://mcp.apify.com?tools=seralifatih/congress-trading-pipeline,seralifatih/congress-trading-pipeline-1
+```
+
+Cursor (`.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "congress-trades": {
+      "url": "https://mcp.apify.com?tools=seralifatih/congress-trading-pipeline,seralifatih/congress-trading-pipeline-1"
+    }
+  }
+}
+```
+
+Apify CLI:
+
+```bash
+apify mcp install cursor --tools seralifatih/congress-trading-pipeline,seralifatih/congress-trading-pipeline-1
+```
+
+On first connection you'll be asked to sign in to Apify. Runs are billed to your Apify account at the normal pay-per-result price.
 
 ---
 
@@ -96,17 +126,23 @@ Run any combination. The hosted versions update automatically — no infrastruct
 
 ---
 
-## Data source
+## Data source and permitted use
 
 - Senate: [U.S. Senate Electronic Financial Disclosures](https://efts.senate.gov) — PTRs required under the STOCK Act of 2012
 - House: [Clerk of the U.S. House — Financial Disclosure Reports](https://disclosures-clerk.house.gov/FinancialDisclosure) — same legal requirement, different filing system
 - Lobbying: [Senate Lobbying Disclosure Act (LDA) API](https://lda.gov) — quarterly LD-1/LD-2 filings required under the Lobbying Disclosure Act of 1995
 - Member/committee roster: [`unitedstates/congress-legislators`](https://github.com/unitedstates/congress-legislators) — community-maintained, used by the overlap pipeline to resolve committee jurisdiction
 
-All data is public domain U.S. government disclosure data (or, for the legislators project, a community-maintained mirror of it). These pipelines do not scrape third-party aggregators.
+These pipelines do not scrape third-party aggregators.
+
+Data is sourced from public STOCK Act Periodic Transaction Reports published by the U.S. House Clerk and the U.S. Senate eFD system, and is provided for informational and research purposes.
+
+Users are responsible for ensuring their use complies with 5 U.S.C. §13107(c), which prohibits obtaining or using these reports for any unlawful purpose; any commercial purpose other than by news and communications media for dissemination to the general public; determining an individual's credit rating; or soliciting money for political, charitable, or other purposes.
+
+Not investment advice. Disclosures are filed up to 45 days after a trade and report amount ranges, not exact values.
 
 ---
 
 ## License
 
-MIT
+The code is MIT-licensed. That license covers the code only; use of the data is governed by "Data source and permitted use" above.

@@ -1,6 +1,6 @@
 # U.S. Senate Trading Pipeline
 
-Every U.S. Senate Periodic Transaction Report — the stock trades senators are legally required to disclose under the STOCK Act — delivered as clean, deduplicated JSON within hours of the filing hitting the official record. One row per transaction, with normalized buy/sell direction, integer dollar ranges, tickers, and stable IDs, so you can point a screener, an alerting rule, or a backtest straight at the dataset without writing a parser or reconciling a vendor's schema. Pulled directly from the Senate eFD system — no aggregator in the middle, no subscription, public domain data you own the feed for.
+Every U.S. Senate Periodic Transaction Report — the stock trades senators are legally required to disclose under the STOCK Act — delivered as clean, deduplicated JSON within hours of the filing hitting the official record. One row per transaction, with normalized buy/sell direction, integer dollar ranges, tickers, and stable IDs, so you can point a screener, an alerting rule, or a backtest straight at the dataset without writing a parser or reconciling a vendor's schema. Pulled directly from the Senate eFD system — no aggregator in the middle, no subscription.
 
 Part of a set:
 - **[House Trading Pipeline](https://apify.com/seralifatih/congress-trading-pipeline-1)** — same target schema, House Clerk PTRs. Run either or both.
@@ -145,6 +145,36 @@ backtest or an alert history.
 
 ---
 
+## Use with Claude, Cursor, or any MCP client
+
+Add this URL as an MCP server to give your AI agent direct access to both actors:
+
+```text
+https://mcp.apify.com?tools=seralifatih/congress-trading-pipeline,seralifatih/congress-trading-pipeline-1
+```
+
+Cursor (`.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "congress-trades": {
+      "url": "https://mcp.apify.com?tools=seralifatih/congress-trading-pipeline,seralifatih/congress-trading-pipeline-1"
+    }
+  }
+}
+```
+
+Apify CLI:
+
+```bash
+apify mcp install cursor --tools seralifatih/congress-trading-pipeline,seralifatih/congress-trading-pipeline-1
+```
+
+On first connection you'll be asked to sign in to Apify. Runs are billed to your Apify account at the normal pay-per-result price.
+
+---
+
 ## How it works
 
 ```
@@ -252,17 +282,20 @@ Stated plainly, so you can decide whether they matter for your use case:
 
 ---
 
-## Data source
+## Data source and permitted use
 
-[U.S. Senate Electronic Financial Disclosures (eFD)](https://efts.senate.gov)
-— a public government database. Senate PTR filings are required under
+Data is sourced from public STOCK Act Periodic Transaction Reports published by the U.S. House Clerk and the U.S. Senate eFD system, and is provided for informational and research purposes.
+
+Users are responsible for ensuring their use complies with 5 U.S.C. §13107(c), which prohibits obtaining or using these reports for any unlawful purpose; any commercial purpose other than by news and communications media for dissemination to the general public; determining an individual's credit rating; or soliciting money for political, charitable, or other purposes.
+
+Not investment advice. Disclosures are filed up to 45 days after a trade and report amount ranges, not exact values.
+
+This actor's source is [U.S. Senate Electronic Financial Disclosures (eFD)](https://efts.senate.gov),
+a public government database. Senate PTR filings are required under
 the [STOCK Act of 2012](https://en.wikipedia.org/wiki/STOCK_Act),
 which obliges members of Congress to publicly report securities
-transactions over $1,000 within 45 days. These records are public
-domain.
-
-This actor does not scrape third-party aggregators. It pulls only
-from the official source.
+transactions over $1,000 within 45 days. This actor does not scrape
+third-party aggregators. It pulls only from the official source.
 
 ---
 
@@ -288,4 +321,4 @@ for the full environment variable reference and API docs.
 
 ## License
 
-MIT. Use the actor or the source however you want.
+The code is MIT-licensed. That license covers the code only; use of the data is governed by "Data source and permitted use" above.

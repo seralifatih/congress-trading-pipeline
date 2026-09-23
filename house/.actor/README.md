@@ -16,7 +16,7 @@ Part of a set:
 - **Retail traders** tracking which Congress members are buying/selling
   before major legislation — defense stocks before NDAA votes, pharma
   before drug pricing bills, tech before antitrust hearings
-- **Fintech developers** building portfolio tools, alert systems, or
+- **Developers and analysts** building research tools, alerts, or
   dashboards on top of STOCK Act data
 - **Journalists and researchers** monitoring congressional trading
   patterns — no account, no paywall, raw government data
@@ -26,7 +26,7 @@ Part of a set:
 **Why this instead of Quiver or Capitol Trades?**
 Both aggregate from the same source — the Clerk of the House. This
 pipeline pulls directly from the official ZIP archive. No middleman,
-no rate limits, no subscription. You own the pipeline.
+no rate limits, no subscription.
 
 ---
 
@@ -124,6 +124,36 @@ one. Where two rows share `source_id` but differ in `content_hash`,
 
 ---
 
+## Use with Claude, Cursor, or any MCP client
+
+Add this URL as an MCP server to give your AI agent direct access to both actors:
+
+```text
+https://mcp.apify.com?tools=seralifatih/congress-trading-pipeline,seralifatih/congress-trading-pipeline-1
+```
+
+Cursor (`.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "congress-trades": {
+      "url": "https://mcp.apify.com?tools=seralifatih/congress-trading-pipeline,seralifatih/congress-trading-pipeline-1"
+    }
+  }
+}
+```
+
+Apify CLI:
+
+```bash
+apify mcp install cursor --tools seralifatih/congress-trading-pipeline,seralifatih/congress-trading-pipeline-1
+```
+
+On first connection you'll be asked to sign in to Apify. Runs are billed to your Apify account at the normal pay-per-result price.
+
+---
+
 ## How it works
 
 ```
@@ -142,7 +172,7 @@ one. Where two rows share `source_id` but differ in `content_hash`,
                                                                      └──────────────────┘
 ```
 
-**1. ZIP fetch.** A single HTTPS GET pulls the year-to-date ZIP from `https://disclosures-clerk.house.gov/public_disc/financial-pdfs/<YEAR>FD.zip`. No proxy needed — plain HTTPS, no Akamai, no terms gate.
+**1. ZIP fetch.** A single HTTPS GET pulls the year-to-date ZIP from `https://disclosures-clerk.house.gov/public_disc/financial-pdfs/<YEAR>FD.zip`. No proxy or login needed — plain HTTPS.
 
 **2. XML index.** Inside the ZIP is `<YEAR>FD.xml` listing every disclosure for the year. Filter to `FilingType=P` (Periodic Transaction Report) within the configured date window.
 
@@ -244,13 +274,15 @@ src/
 
 ---
 
-## Data source
+## Data source and permitted use
 
-[Clerk of the U.S. House — Financial Disclosure Reports](https://disclosures-clerk.house.gov/FinancialDisclosure)
+Data is sourced from public STOCK Act Periodic Transaction Reports published by the U.S. House Clerk and the U.S. Senate eFD system, and is provided for informational and research purposes.
 
-Public domain government records published under the [STOCK Act of 2012](https://en.wikipedia.org/wiki/STOCK_Act). The Clerk publishes a fresh ZIP daily containing every disclosure filed that year.
+Users are responsible for ensuring their use complies with 5 U.S.C. §13107(c), which prohibits obtaining or using these reports for any unlawful purpose; any commercial purpose other than by news and communications media for dissemination to the general public; determining an individual's credit rating; or soliciting money for political, charitable, or other purposes.
 
-This pipeline does not scrape third-party aggregators. It pulls only from the official source.
+Not investment advice. Disclosures are filed up to 45 days after a trade and report amount ranges, not exact values.
+
+This actor's source is the [Clerk of the U.S. House — Financial Disclosure Reports](https://disclosures-clerk.house.gov/FinancialDisclosure), published under the [STOCK Act of 2012](https://en.wikipedia.org/wiki/STOCK_Act). The Clerk publishes a fresh ZIP daily containing every disclosure filed that year. This pipeline does not scrape third-party aggregators. It pulls only from the official source.
 
 ---
 
@@ -264,4 +296,4 @@ This pipeline does not scrape third-party aggregators. It pulls only from the of
 
 ## License
 
-MIT. Use the actor or the source however you want.
+The code is MIT-licensed. That license covers the code only; use of the data is governed by "Data source and permitted use" above.

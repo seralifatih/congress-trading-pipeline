@@ -17,7 +17,7 @@ Part of a set:
 - **Retail traders** tracking which senators are buying/selling before
   major legislation — defense before NDAA votes, pharma before drug
   pricing bills, tech before antitrust hearings
-- **Fintech developers** building portfolio tools, alert systems, or
+- **Developers and analysts** building research tools, alerts, or
   dashboards on top of STOCK Act data
 - **Journalists and researchers** monitoring congressional trading
   patterns — no account, no paywall, raw government data
@@ -26,8 +26,7 @@ Part of a set:
 
 **Why this instead of Quiver or Capitol Trades?**
 They aggregate from the same source — the Senate eFD system. This
-actor pulls directly from it. No middleman, no subscription. You own
-the feed.
+actor pulls directly from it. No middleman, no subscription.
 
 ---
 
@@ -129,6 +128,36 @@ one. Where two rows share `source_id` but differ in `content_hash`,
 
 ---
 
+## Use with Claude, Cursor, or any MCP client
+
+Add this URL as an MCP server to give your AI agent direct access to both actors:
+
+```text
+https://mcp.apify.com?tools=seralifatih/congress-trading-pipeline,seralifatih/congress-trading-pipeline-1
+```
+
+Cursor (`.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "congress-trades": {
+      "url": "https://mcp.apify.com?tools=seralifatih/congress-trading-pipeline,seralifatih/congress-trading-pipeline-1"
+    }
+  }
+}
+```
+
+Apify CLI:
+
+```bash
+apify mcp install cursor --tools seralifatih/congress-trading-pipeline,seralifatih/congress-trading-pipeline-1
+```
+
+On first connection you'll be asked to sign in to Apify. Runs are billed to your Apify account at the normal pay-per-result price.
+
+---
+
 ## How it works
 
 ```
@@ -204,13 +233,17 @@ for the self-hosted setup.
 
 ---
 
-## Data source
+## Data source and permitted use
 
-[U.S. Senate Electronic Financial Disclosures (eFD)](https://efts.senate.gov)
-— a public government database. Senate PTR filings are required under
-the [STOCK Act of 2012](https://en.wikipedia.org/wiki/STOCK_Act) and
-are public domain.
+Data is sourced from public STOCK Act Periodic Transaction Reports published by the U.S. House Clerk and the U.S. Senate eFD system, and is provided for informational and research purposes.
 
+Users are responsible for ensuring their use complies with 5 U.S.C. §13107(c), which prohibits obtaining or using these reports for any unlawful purpose; any commercial purpose other than by news and communications media for dissemination to the general public; determining an individual's credit rating; or soliciting money for political, charitable, or other purposes.
+
+Not investment advice. Disclosures are filed up to 45 days after a trade and report amount ranges, not exact values.
+
+This actor's source is [U.S. Senate Electronic Financial Disclosures (eFD)](https://efts.senate.gov),
+a public government database. Senate PTR filings are required under
+the [STOCK Act of 2012](https://en.wikipedia.org/wiki/STOCK_Act).
 This actor does not scrape third-party aggregators. It pulls only
 from the official source.
 
@@ -218,4 +251,4 @@ from the official source.
 
 ## License
 
-MIT. Use the actor or the source however you want.
+The code is MIT-licensed. That license covers the code only; use of the data is governed by "Data source and permitted use" above.
