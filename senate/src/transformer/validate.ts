@@ -1,7 +1,7 @@
 import { isValid, parseISO } from 'date-fns';
 import type { Transaction } from '../types/index.js';
 
-const VALID_TYPES = new Set(['buy', 'sell']);
+const VALID_TYPES = new Set(['buy', 'sell', 'exchange']);
 const VALID_OWNERS = new Set(['self', 'joint', 'spouse', 'child']);
 
 export function validateTransaction(t: Transaction): string[] {
@@ -20,7 +20,7 @@ export function validateTransaction(t: Transaction): string[] {
   }
 
   if (!VALID_TYPES.has(t.type)) {
-    errors.push(`type "${t.type}" must be "buy" or "sell"`);
+    errors.push(`type "${t.type}" must be "buy", "sell", or "exchange"`);
   }
 
   if (!VALID_OWNERS.has(t.owner)) {

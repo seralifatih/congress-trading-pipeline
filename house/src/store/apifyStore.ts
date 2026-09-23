@@ -43,8 +43,8 @@ export class ApifyStore implements StoreAdapter {
     }
     if (filters.type) rows = rows.filter((r) => r.type === filters.type);
     if (filters.owner) rows = rows.filter((r) => r.owner === filters.owner);
-    if (filters.date_from) rows = rows.filter((r) => r.transaction_date >= filters.date_from!);
-    if (filters.date_to)   rows = rows.filter((r) => r.transaction_date <= filters.date_to!);
+    if (filters.date_from) rows = rows.filter((r) => r.transaction_date !== null && r.transaction_date >= filters.date_from!);
+    if (filters.date_to)   rows = rows.filter((r) => r.transaction_date !== null && r.transaction_date <= filters.date_to!);
 
     const offset = filters.offset ?? 0;
     const limit  = filters.limit  ?? 500;

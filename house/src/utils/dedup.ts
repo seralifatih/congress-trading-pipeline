@@ -13,8 +13,8 @@ import type { RawTransaction, Transaction } from '../types/index.js';
 export function dedupKey(t: Transaction): string {
   return [
     t.politician.toLowerCase().trim(),
-    t.transaction_date.toLowerCase().trim(),
-    t.asset_name.toLowerCase().trim(),
+    (t.transaction_date ?? '').toLowerCase().trim(),
+    (t.asset_name ?? '').toLowerCase().trim(),
     String(t.amount_min),
     t.amount_max === null ? '' : String(t.amount_max),
     t.source_id,
@@ -46,12 +46,12 @@ export function generateId(transaction: Transaction): string {
 export function computeContentHash(t: Transaction): string {
   const key = [
     t.politician.toLowerCase().trim(),
-    t.transaction_date.toLowerCase().trim(),
-    t.asset_name.toLowerCase().trim(),
-    t.type,
+    (t.transaction_date ?? '').toLowerCase().trim(),
+    (t.asset_name ?? '').toLowerCase().trim(),
+    t.type ?? '',
     String(t.amount_min),
     t.amount_max === null ? '' : String(t.amount_max),
-    t.owner,
+    t.owner ?? '',
   ].join('|');
   return createHash('sha256').update(key).digest('hex');
 }

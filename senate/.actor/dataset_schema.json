@@ -14,6 +14,7 @@
       "id",
       "source_id",
       "content_hash",
+      "parse_status",
       "fetchedAt",
       "lastModifiedAt",
       "revisionCount"
@@ -48,6 +49,19 @@
         "type": ["integer", "null"],
         "title": "Amendment number",
         "description": "The N in \"(Amendment N)\". Null for originals and for anything the source doesn't label.",
+        "example": null
+      },
+      "parse_status": {
+        "type": "string",
+        "title": "Parse status",
+        "description": "Always 'ok' on this actor — the Senate source is HTML, not a PDF, so there's no scanned/unreadable-filing case here. Present for schema parity with the House actor, whose PDF parser can emit a 'scanned_unparsed' placeholder row for a filing it can't read (no OCR fallback).",
+        "enum": ["ok", "scanned_unparsed"],
+        "example": "ok"
+      },
+      "pdf_url": {
+        "type": ["string", "null"],
+        "title": "Source PDF URL",
+        "description": "Always null on this actor — the Senate source is an HTML page, not a per-row PDF.",
         "example": null
       },
       "fetchedAt": {
@@ -107,8 +121,8 @@
       "type": {
         "type": "string",
         "title": "Trade type",
-        "description": "Normalized to 'buy' (Purchase) or 'sell' (Sale Full / Sale Partial).",
-        "enum": ["buy", "sell"],
+        "description": "Normalized to 'buy' (Purchase), 'sell' (Sale Full / Sale Partial), or 'exchange' (an asset swap, e.g. a called security or merger conversion — reported by the source as its own transaction type, not a buy or sell).",
+        "enum": ["buy", "sell", "exchange"],
         "example": "buy"
       },
       "amount_min": {
@@ -203,6 +217,8 @@
           "content_hash",
           "filing_type",
           "amendment_number",
+          "parse_status",
+          "pdf_url",
           "fetchedAt",
           "lastModifiedAt",
           "revisionCount"

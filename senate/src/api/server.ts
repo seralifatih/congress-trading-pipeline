@@ -18,7 +18,7 @@ const { PORT, CRON_SECRET, FRONTEND_ORIGIN } = config;
 // CONTRACT.md §3: Transaction fields map 1-to-1 to frontend Signal fields
 // with these renames:
 //   Transaction.politician   → Signal.filer_name
-//   Transaction.type         → Signal.trade_type  ('buy'→'purchase', 'sell'→'sale')
+//   Transaction.type         → Signal.trade_type  ('buy'→'purchase', 'sell'→'sale', 'exchange'→'exchange')
 //   Transaction.amount_min   → Signal.amount_low
 //   Transaction.amount_max   → Signal.amount_high
 //   Transaction.transaction_date → Signal.trade_date
@@ -29,7 +29,7 @@ function serialize(t: Transaction): Record<string, unknown> {
     filer_name: t.politician,
     filer_type: 'congress' as const,
     party: null,                        // TODO (open question 5b): populate from DB once party column added
-    trade_type: t.type === 'buy' ? 'purchase' : 'sale',
+    trade_type: t.type === 'buy' ? 'purchase' : t.type === 'sell' ? 'sale' : 'exchange',
     ticker: t.ticker,
     company_name: null,                 // Phase 2: ticker→company enrichment
     asset_name: t.asset_name,
@@ -53,6 +53,8 @@ function serialize(t: Transaction): Record<string, unknown> {
     cluster_id: null,
     committees: null,                   // TODO (open question 5b): add committees column
     is_active: true,
+    parse_status: t.parse_status,
+    pdf_url: t.pdf_url ?? null,
     created_at: t.created_at ?? null,
   };
 }
@@ -104,7 +106,7 @@ const QuerySchema = z.object({
   ticker: z.string().optional(),
   date_from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD').optional(),
   date_to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD').optional(),
-  type: z.enum(['buy', 'sell']).optional(),
+  type: z.enum(['buy', 'sell', 'exchange']).optional(),
   owner: z.enum(['self', 'joint', 'spouse', 'child']).optional(),
   limit: z.coerce.number().int().min(1).max(1000).optional(),
   offset: z.coerce.number().int().min(0).optional(),

@@ -6,16 +6,17 @@ const log = makeLogger('normalize');
 
 // ─── Type mapping ─────────────────────────────────────────────────────────────
 
-const TYPE_MAP: Record<string, 'buy' | 'sell'> = {
+const TYPE_MAP: Record<string, 'buy' | 'sell' | 'exchange'> = {
   'purchase':      'buy',
   'sale (full)':   'sell',
   'sale (partial)':'sell',
   'sale_full':     'sell',
   'sale_partial':  'sell',
   'sale':          'sell',
+  'exchange':      'exchange',
 };
 
-function normalizeType(raw: string): 'buy' | 'sell' | null {
+function normalizeType(raw: string): 'buy' | 'sell' | 'exchange' | null {
   const key = raw.trim().toLowerCase();
   return TYPE_MAP[key] ?? null;
 }
@@ -125,7 +126,7 @@ type SkipReason =
   | 'missing_asset_name'
   | 'unrecognized_type';
 
-function skipReason(raw: RawTransaction, type: 'buy' | 'sell' | null): SkipReason | null {
+function skipReason(raw: RawTransaction, type: 'buy' | 'sell' | 'exchange' | null): SkipReason | null {
   if (!raw.politician.trim()) return 'missing_politician';
   if (!raw.transaction_date.trim() && !raw.filing_date.trim()) return 'missing_both_dates';
   if (!raw.asset_name.trim()) return 'missing_asset_name';
@@ -164,6 +165,8 @@ export function normalize(raw: RawTransaction): Transaction | null {
     content_hash: '', // filled in by pipeline.ts alongside id, once amount_min/max etc. are final
     filing_type: raw.filing_type,
     amendment_number: raw.amendment_number,
+    parse_status: 'ok', // Senate has no scanned-PDF case — see types/index.ts
+    pdf_url: null,
     fetchedAt: '',      // filled in by pipeline.ts — first-seen or carried forward on revision
     lastModifiedAt: '', // filled in by pipeline.ts
     revisionCount: 0,   // filled in by pipeline.ts

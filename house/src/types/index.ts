@@ -17,6 +17,13 @@ export interface RawTransaction {
   // Sourced from the PTR's own per-row "Filing Status: New/Amended" comment
   // line — null when the source doesn't say. Never inferred from duplication.
   filing_type: 'original' | 'amendment' | null;
+  // 'ok' unless this row is a placeholder for a filing pdf-parse couldn't
+  // read at all (scanned/paper PTR, no text layer) — see parseHousePtrText.
+  // A placeholder row carries politician/filing_date/source_id/pdf_url only;
+  // every transaction-detail field below is empty/blank, normalize.ts passes
+  // it straight through unvalidated.
+  parse_status: 'ok' | 'scanned_unparsed';
+  pdf_url: string | null;
   raw_json: Record<string, unknown>;
 }
 
@@ -25,16 +32,27 @@ export interface RawTransaction {
 export const TransactionSchema = z.object({
   id: z.string().optional(), // sha256 hex digest, not a UUID — see utils/dedup.ts
   politician: z.string().min(1),
-  transaction_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD'),
+  // Null only on a 'scanned_unparsed' placeholder row — see parse_status.
+  transaction_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD').nullable(),
   filing_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD'),
   ticker: z.string().nullable(),
-  asset_name: z.string().min(1),
-  asset_type: z.string().min(1),
-  type: z.enum(['buy', 'sell']),
-  amount_min: z.number().int().nonnegative(),
+  asset_name: z.string().min(1).nullable(),
+  asset_type: z.string().min(1).nullable(),
+  type: z.enum(['buy', 'sell', 'exchange']).nullable(),
+  amount_min: z.number().int().nonnegative().nullable(),
   amount_max: z.number().int().nonnegative().nullable(),
-  owner: z.enum(['self', 'joint', 'spouse', 'child']),
+  owner: z.enum(['self', 'joint', 'spouse', 'child']).nullable(),
   source_id: z.string().min(1),
+  // 'scanned_unparsed': this filing's PDF has no extractable text layer (a
+  // scanned/paper PTR) and pdf-parse + the marker-anchored parser could not
+  // read it — no OCR fallback exists. The row is a placeholder: every
+  // transaction-detail field above is null, and pdf_url points at the source
+  // PDF so a human (or a future OCR pass) can go look. 'ok' for every
+  // normally-parsed row, on both Senate and House.
+  parse_status: z.enum(['ok', 'scanned_unparsed']),
+  // Source PDF URL. Populated on House rows (scanned or not); null on
+  // Senate, which has no per-row PDF (its source is HTML).
+  pdf_url: z.string().nullable().optional(),
   // sha256 of politician|transaction_date|asset_name|type|amount_min|amount_max|owner
   // (source_id deliberately excluded) — see utils/dedup.ts computeContentHash.
   // Rows sharing a content_hash within the same source document are legitimate
@@ -82,7 +100,7 @@ export interface QueryFilters {
   ticker?: string;
   date_from?: string;  // YYYY-MM-DD inclusive
   date_to?: string;    // YYYY-MM-DD inclusive
-  type?: 'buy' | 'sell';
+  type?: 'buy' | 'sell' | 'exchange';
   owner?: 'self' | 'joint' | 'spouse' | 'child';
   limit?: number;
   offset?: number;

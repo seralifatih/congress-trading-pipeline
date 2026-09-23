@@ -179,8 +179,9 @@ export async function fetchAllHouse(
         member: f.member,
         filingDate: f.filingDate,
         docId: f.docId,
+        pdfUrl: ptrPdfUrl(f.year, f.docId),
       });
-      if (parsed.length === 0) scanned++;
+      if (parsed.some((r) => r.parse_status === 'scanned_unparsed')) scanned++;
       records.push(...parsed);
     } catch (err) {
       errors++;

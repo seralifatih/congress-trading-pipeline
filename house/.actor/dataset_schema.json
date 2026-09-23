@@ -14,6 +14,7 @@
       "id",
       "source_id",
       "content_hash",
+      "parse_status",
       "fetchedAt",
       "lastModifiedAt",
       "revisionCount"
@@ -44,6 +45,19 @@
         "enum": ["original", "amendment", null],
         "example": "original"
       },
+      "parse_status": {
+        "type": "string",
+        "title": "Parse status",
+        "description": "'ok' for a normally-parsed row. 'scanned_unparsed' means this filing's PDF has no extractable text layer (a scanned/paper PTR) — there is no OCR fallback, so the row is a placeholder: every transaction-detail field (transaction_date, ticker, asset_name, asset_type, type, amount_min, amount_max, owner) is null, and pdf_url points at the source PDF.",
+        "enum": ["ok", "scanned_unparsed"],
+        "example": "ok"
+      },
+      "pdf_url": {
+        "type": ["string", "null"],
+        "title": "Source PDF URL",
+        "description": "URL of the House PTR PDF this row was parsed from (or, for a 'scanned_unparsed' row, the PDF that couldn't be read).",
+        "example": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/20034201.pdf"
+      },
       "fetchedAt": {
         "type": "string",
         "title": "Fetched at",
@@ -65,63 +79,63 @@
       "politician": {
         "type": "string",
         "title": "Politician",
-        "description": "Filer name as it appears on the Senate disclosure.",
+        "description": "Filer name as it appears on the House disclosure.",
         "example": "Tommy Tuberville"
       },
       "transaction_date": {
-        "type": "string",
+        "type": ["string", "null"],
         "title": "Transaction date",
-        "description": "ISO date (YYYY-MM-DD) when the trade was executed.",
+        "description": "ISO date (YYYY-MM-DD) when the trade was executed. Null on a 'scanned_unparsed' placeholder row.",
         "example": "2026-04-15"
       },
       "filing_date": {
         "type": "string",
         "title": "Filing date",
-        "description": "ISO date (YYYY-MM-DD) when the PTR was filed with the Senate.",
+        "description": "ISO date (YYYY-MM-DD) when the PTR was filed with the House Clerk.",
         "example": "2026-04-20"
       },
       "ticker": {
         "type": ["string", "null"],
         "title": "Ticker",
-        "description": "Stock ticker. Null for bonds, municipal securities, structured notes, and other non-equity instruments.",
+        "description": "Stock ticker. Null for bonds, municipal securities, structured notes, and other non-equity instruments — also null on a 'scanned_unparsed' placeholder row.",
         "example": "NVDA"
       },
       "asset_name": {
-        "type": "string",
+        "type": ["string", "null"],
         "title": "Asset name",
-        "description": "Full asset description as reported on the PTR.",
+        "description": "Full asset description as reported on the PTR. Null on a 'scanned_unparsed' placeholder row.",
         "example": "NVIDIA Corporation - Common Stock"
       },
       "asset_type": {
-        "type": "string",
+        "type": ["string", "null"],
         "title": "Asset type",
-        "description": "Senate EFD asset classification.",
+        "description": "House asset classification. Null on a 'scanned_unparsed' placeholder row.",
         "example": "Stock"
       },
       "type": {
-        "type": "string",
+        "type": ["string", "null"],
         "title": "Trade type",
-        "description": "Normalized to 'buy' (Purchase) or 'sell' (Sale Full / Sale Partial).",
-        "enum": ["buy", "sell"],
+        "description": "Normalized to 'buy' (Purchase), 'sell' (Sale Full / Sale Partial), or 'exchange' (asset type code [E] — an asset swap, e.g. a called security or merger conversion — reported by the source as its own transaction type, not a buy or sell). Null on a 'scanned_unparsed' placeholder row.",
+        "enum": ["buy", "sell", "exchange", null],
         "example": "buy"
       },
       "amount_min": {
-        "type": "integer",
+        "type": ["integer", "null"],
         "title": "Amount lower bound",
-        "description": "Lower bound of the reported amount range, in USD.",
+        "description": "Lower bound of the reported amount range, in USD. Null on a 'scanned_unparsed' placeholder row.",
         "example": 1001
       },
       "amount_max": {
         "type": ["integer", "null"],
         "title": "Amount upper bound",
-        "description": "Upper bound of the reported amount range, in USD. Null for unbounded 'Over $X' brackets.",
+        "description": "Upper bound of the reported amount range, in USD. Null for unbounded 'Over $X' brackets, and on a 'scanned_unparsed' placeholder row.",
         "example": 15000
       },
       "owner": {
-        "type": "string",
+        "type": ["string", "null"],
         "title": "Owner",
-        "description": "Account owner classification per STOCK Act.",
-        "enum": ["self", "joint", "spouse", "child"],
+        "description": "Account owner classification per STOCK Act. Null on a 'scanned_unparsed' placeholder row.",
+        "enum": ["self", "joint", "spouse", "child", null],
         "example": "self"
       }
     }
@@ -196,6 +210,8 @@
           "source_id",
           "content_hash",
           "filing_type",
+          "parse_status",
+          "pdf_url",
           "fetchedAt",
           "lastModifiedAt",
           "revisionCount"

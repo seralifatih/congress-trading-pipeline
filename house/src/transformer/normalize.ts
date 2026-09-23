@@ -6,16 +6,17 @@ const log = makeLogger('normalize');
 
 // ─── Type mapping ─────────────────────────────────────────────────────────────
 
-const TYPE_MAP: Record<string, 'buy' | 'sell'> = {
+const TYPE_MAP: Record<string, 'buy' | 'sell' | 'exchange'> = {
   'purchase':      'buy',
   'sale (full)':   'sell',
   'sale (partial)':'sell',
   'sale_full':     'sell',
   'sale_partial':  'sell',
   'sale':          'sell',
+  'exchange':      'exchange',
 };
 
-function normalizeType(raw: string): 'buy' | 'sell' | null {
+function normalizeType(raw: string): 'buy' | 'sell' | 'exchange' | null {
   const key = raw.trim().toLowerCase();
   return TYPE_MAP[key] ?? null;
 }
@@ -125,7 +126,7 @@ type SkipReason =
   | 'missing_asset_name'
   | 'unrecognized_type';
 
-function skipReason(raw: RawTransaction, type: 'buy' | 'sell' | null): SkipReason | null {
+function skipReason(raw: RawTransaction, type: 'buy' | 'sell' | 'exchange' | null): SkipReason | null {
   if (!raw.politician.trim()) return 'missing_politician';
   if (!raw.transaction_date.trim() && !raw.filing_date.trim()) return 'missing_both_dates';
   if (!raw.asset_name.trim()) return 'missing_asset_name';
@@ -135,7 +136,36 @@ function skipReason(raw: RawTransaction, type: 'buy' | 'sell' | null): SkipReaso
 
 // ─── Main export ──────────────────────────────────────────────────────────────
 
+// A 'scanned_unparsed' row is a placeholder for a filing pdf-parse couldn't
+// read at all — every transaction-detail field is intentionally empty, so
+// none of the normal validation/normalization below applies to it. Passed
+// straight through so the filing isn't silently dropped from the dataset.
+function normalizeScannedPlaceholder(raw: RawTransaction): Transaction {
+  return {
+    politician: raw.politician.trim(),
+    transaction_date: null,
+    filing_date: raw.filing_date.trim(),
+    ticker: null,
+    asset_name: null,
+    asset_type: null,
+    type: null,
+    amount_min: null,
+    amount_max: null,
+    owner: null,
+    source_id: raw.source_id,
+    content_hash: '',
+    filing_type: raw.filing_type,
+    parse_status: 'scanned_unparsed',
+    pdf_url: raw.pdf_url,
+    fetchedAt: '',
+    lastModifiedAt: '',
+    revisionCount: 0,
+  };
+}
+
 export function normalize(raw: RawTransaction): Transaction | null {
+  if (raw.parse_status === 'scanned_unparsed') return normalizeScannedPlaceholder(raw);
+
   const type = normalizeType(raw.type);
   const reason = skipReason(raw, type);
 
@@ -163,6 +193,8 @@ export function normalize(raw: RawTransaction): Transaction | null {
     source_id: raw.source_id,
     content_hash: '', // filled in by pipeline.ts alongside id, once amount_min/max etc. are final
     filing_type: raw.filing_type,
+    parse_status: 'ok',
+    pdf_url: raw.pdf_url,
     fetchedAt: '',      // filled in by pipeline.ts — first-seen or carried forward on revision
     lastModifiedAt: '', // filled in by pipeline.ts
     revisionCount: 0,   // filled in by pipeline.ts
@@ -174,6 +206,11 @@ export function normalizeAll(raws: RawTransaction[]): Transaction[] {
   let skipped = 0;
 
   for (const raw of raws) {
+    if (raw.parse_status === 'scanned_unparsed') {
+      results.push(normalizeScannedPlaceholder(raw));
+      continue;
+    }
+
     const type = normalizeType(raw.type);
     const reason = skipReason(raw, type);
 

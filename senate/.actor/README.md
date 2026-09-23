@@ -52,6 +52,8 @@ One row per individual transaction reported in a Senate PTR:
   "content_hash": "7c2e5b8d4f6a0c9e3b7d1fa3f9c1e2b8d47f60a1c5e93b2d8f7a4c6e0b1d9f3a",
   "filing_type": "original",
   "amendment_number": null,
+  "parse_status": "ok",
+  "pdf_url": null,
   "fetchedAt": "2026-03-20T18:04:11.000Z",
   "lastModifiedAt": "2026-03-20T18:04:11.000Z",
   "revisionCount": 0
@@ -67,7 +69,7 @@ One row per individual transaction reported in a Senate PTR:
 | `ticker` | `string \| null` | `null` for bonds, municipals, structured notes |
 | `asset_name` | `string` | Full asset description |
 | `asset_type` | `string` | `Stock`, `Stock Option`, `Mutual Fund`, `Corporate Bond`, etc. |
-| `type` | `'buy' \| 'sell'` | Normalized from source purchase/sale codes |
+| `type` | `'buy' \| 'sell' \| 'exchange'` | `Purchase` → `buy`; `Sale (Full)`/`Sale (Partial)` → `sell`; `Exchange` (asset swap, e.g. shares exchanged in a merger or spinoff) → `exchange` |
 | `amount_min` | `integer` | Lower bound of reported amount range, USD |
 | `amount_max` | `integer \| null` | Upper bound. `null` for unbounded "Over $X" disclosures |
 | `owner` | `'self' \| 'joint' \| 'spouse' \| 'child'` | Account owner per STOCK Act categories |
@@ -75,6 +77,8 @@ One row per individual transaction reported in a Senate PTR:
 | `content_hash` | `string` | SHA-256 of `politician\|date\|asset\|type\|amount_min\|amount_max\|owner` (source_id excluded) — see "Duplicate transactions across filings" below |
 | `filing_type` | `'original' \| 'amendment' \| null` | Read from the PTR's "(Amendment N)" label. `null` only when unlabeled — never guessed |
 | `amendment_number` | `integer \| null` | The N in "(Amendment N)"; `null` for originals |
+| `parse_status` | `'ok'` | Always `'ok'` here. The Senate source is an HTML table, not a PDF, so there's no scanned-filing case. Present for parity with the House actor, which emits `'scanned_unparsed'` placeholder rows |
+| `pdf_url` | `null` | Always `null` here — no per-row PDF on the Senate source |
 | `fetchedAt` | `string` (ISO 8601 UTC) | When this row was first pulled from source. Immutable — never updated by a later re-fetch of the same, unchanged row |
 | `lastModifiedAt` | `string` (ISO 8601 UTC) | When this row's content last changed. Equal to `fetchedAt` until a revision is detected |
 | `revisionCount` | `integer` | How many times this source row's content has changed since it was first seen. `0` if never revised |

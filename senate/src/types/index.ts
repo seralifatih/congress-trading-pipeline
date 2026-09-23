@@ -31,7 +31,7 @@ export const TransactionSchema = z.object({
   ticker: z.string().nullable(),
   asset_name: z.string().min(1),
   asset_type: z.string().min(1),
-  type: z.enum(['buy', 'sell']),
+  type: z.enum(['buy', 'sell', 'exchange']),
   amount_min: z.number().int().nonnegative(),
   amount_max: z.number().int().nonnegative().nullable(),
   owner: z.enum(['self', 'joint', 'spouse', 'child']),
@@ -49,6 +49,13 @@ export const TransactionSchema = z.object({
   filing_type: z.enum(['original', 'amendment']).nullable(),
   // Senate only: the N in "(Amendment N)". No equivalent exists on House.
   amendment_number: z.number().int().positive().nullable().optional(),
+  // Always 'ok' on Senate — the source is HTML, not a PDF, so there's no
+  // scanned/unreadable-filing case here. Field exists for schema parity with
+  // the House actor, whose PDF parser emits 'scanned_unparsed' placeholder
+  // rows for filings it can't read (see house/src/parser/housePdfParser.ts).
+  parse_status: z.enum(['ok', 'scanned_unparsed']).default('ok'),
+  // Always null on Senate — no per-row source PDF (source is an HTML page).
+  pdf_url: z.string().nullable().optional(),
   // ISO 8601 UTC timestamp — when this row (this exact id) was first pulled
   // from source. Set once at insert and never touched again; a re-fetch of
   // an unchanged row is dropped by dedup() before it would overwrite this.
@@ -85,7 +92,7 @@ export interface QueryFilters {
   ticker?: string;
   date_from?: string;  // YYYY-MM-DD inclusive
   date_to?: string;    // YYYY-MM-DD inclusive
-  type?: 'buy' | 'sell';
+  type?: 'buy' | 'sell' | 'exchange';
   owner?: 'self' | 'joint' | 'spouse' | 'child';
   limit?: number;
   offset?: number;

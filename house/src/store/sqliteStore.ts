@@ -14,18 +14,20 @@ const CREATE_TABLE = `
   CREATE TABLE IF NOT EXISTS transactions (
     id              TEXT PRIMARY KEY,
     politician      TEXT NOT NULL,
-    transaction_date TEXT NOT NULL,
+    transaction_date TEXT,
     filing_date     TEXT NOT NULL,
     ticker          TEXT,
-    asset_name      TEXT NOT NULL,
+    asset_name      TEXT,
     asset_type      TEXT,
-    type            TEXT NOT NULL,
+    type            TEXT,
     amount_min      INTEGER,
     amount_max      INTEGER,
     owner           TEXT,
     source_id       TEXT NOT NULL,
     content_hash    TEXT NOT NULL,
     filing_type     TEXT,
+    parse_status    TEXT NOT NULL DEFAULT 'ok',
+    pdf_url         TEXT,
     fetchedAt       TEXT NOT NULL,
     lastModifiedAt  TEXT NOT NULL,
     revisionCount   INTEGER NOT NULL DEFAULT 0,
@@ -38,18 +40,20 @@ const CREATE_TABLE = `
 interface TransactionRow {
   id: string;
   politician: string;
-  transaction_date: string;
+  transaction_date: string | null;
   filing_date: string;
   ticker: string | null;
-  asset_name: string;
+  asset_name: string | null;
   asset_type: string | null;
-  type: string;
+  type: string | null;
   amount_min: number | null;
   amount_max: number | null;
   owner: string | null;
   source_id: string | null;
   content_hash: string | null;
   filing_type: string | null;
+  parse_status: string;
+  pdf_url: string | null;
   fetchedAt: string;
   lastModifiedAt: string;
   revisionCount: number;
@@ -64,14 +68,16 @@ function rowToTransaction(row: TransactionRow): Transaction {
     filing_date: row.filing_date,
     ticker: row.ticker ?? null,
     asset_name: row.asset_name,
-    asset_type: row.asset_type ?? '',
+    asset_type: row.asset_type,
     type: row.type as Transaction['type'],
-    amount_min: row.amount_min ?? 0,
+    amount_min: row.amount_min,
     amount_max: row.amount_max ?? null,
-    owner: (row.owner ?? 'self') as Transaction['owner'],
+    owner: row.owner as Transaction['owner'],
     source_id: row.source_id ?? '',
     content_hash: row.content_hash ?? '',
     filing_type: row.filing_type as Transaction['filing_type'],
+    parse_status: (row.parse_status as Transaction['parse_status']) ?? 'ok',
+    pdf_url: row.pdf_url ?? null,
     fetchedAt: row.fetchedAt,
     lastModifiedAt: row.lastModifiedAt,
     revisionCount: row.revisionCount ?? 0,
@@ -86,7 +92,7 @@ function rowToTransaction(row: TransactionRow): Transaction {
 // CREATE_TABLE below recreates it with the current shape. Runs automatically
 // on every connect — no manual step.
 
-const REQUIRED_COLUMNS = ['source_id', 'content_hash', 'filing_type', 'fetchedAt', 'lastModifiedAt', 'revisionCount'];
+const REQUIRED_COLUMNS = ['source_id', 'content_hash', 'filing_type', 'parse_status', 'pdf_url', 'fetchedAt', 'lastModifiedAt', 'revisionCount'];
 
 function migrateIfNeeded(db: Database.Database): void {
   const tableExists = db
@@ -143,11 +149,11 @@ export class SqliteStore implements StoreAdapter {
       INSERT OR IGNORE INTO transactions
         (id, politician, transaction_date, filing_date, ticker,
          asset_name, asset_type, type, amount_min, amount_max, owner, source_id,
-         content_hash, filing_type, fetchedAt, lastModifiedAt, revisionCount)
+         content_hash, filing_type, parse_status, pdf_url, fetchedAt, lastModifiedAt, revisionCount)
       VALUES
         (@id, @politician, @transaction_date, @filing_date, @ticker,
          @asset_name, @asset_type, @type, @amount_min, @amount_max, @owner, @source_id,
-         @content_hash, @filing_type, @fetchedAt, @lastModifiedAt, @revisionCount)
+         @content_hash, @filing_type, @parse_status, @pdf_url, @fetchedAt, @lastModifiedAt, @revisionCount)
     `);
 
     const saveMany = this.db.transaction((rows: Transaction[]) => {
@@ -169,6 +175,8 @@ export class SqliteStore implements StoreAdapter {
           source_id: t.source_id,
           content_hash: t.content_hash,
           filing_type: t.filing_type ?? null,
+          parse_status: t.parse_status,
+          pdf_url: t.pdf_url ?? null,
           fetchedAt: t.fetchedAt,
           lastModifiedAt: t.lastModifiedAt,
           revisionCount: t.revisionCount,

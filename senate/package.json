@@ -8,7 +8,9 @@
     "apify-start": "node dist/apify.js",
     "build": "tsc",
     "seed": "ts-node --esm scripts/seed.ts",
-    "smoke": "ts-node --esm scripts/smoke-test.ts"
+    "smoke": "ts-node --esm scripts/smoke-test.ts",
+    "pretest": "tsc",
+    "test": "node --test tests/**/*.test.js"
   },
   "dependencies": {
     "apify": "^3.7.0",
