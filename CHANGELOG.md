@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-09-23
+
+### Fixed
+- **Exchange transactions were silently dropped** on both actors. Senate `Exchange` and House `[E]` rows (e.g. shares received/surrendered in a merger) had no type mapping and were skipped as `unrecognized_type`. `type` now has a third value, `'exchange'`.
+- **House rows with a wrapped amount range were silently dropped.** When the transaction data sat on the same line as the `[XX]` marker and the amount range wrapped a line break (`$15,001 -` / `$50,000`), the parser matched nothing. This most often hit `[GS]` bond rows, but stock rows too. In the 50 most recent House PTRs, 24 filings produced zero rows before this fix and 0 after (rows kept: 238 → 410).
+- **Scanned/paper House PDFs were silently dropped.** A PDF with no text layer returned no rows, only a log line. Each such filing now produces one placeholder row (see `parse_status`). There is still no OCR.
+
+### Added
+- **`parse_status`** field (`'ok' | 'scanned_unparsed'`) on every row, both actors. Always `'ok'` on Senate, whose source is HTML.
+- **`pdf_url`** field: the source PDF on House rows; always `null` on Senate.
+- `npm test` in both actors (Node's built-in test runner, real PDF text fixtures).
+
+### Changed
+- **House consumers:** `transaction_date`, `ticker`, `asset_name`, `asset_type`, `type`, `amount_min`, `amount_max` and `owner` can now be `null`, but only on `scanned_unparsed` placeholder rows. Filter on `parse_status = "ok"` to keep the previous shape.
+- The frontend-compatible API returns `trade_type: 'exchange'` for exchange rows (previously they could never appear) and `trade_type: null` for placeholder rows.
+- SQLite schema: new `parse_status` and `pdf_url` columns, applied by the existing automatic migration.
+- Both actors bumped `0.3.0` → `0.4.0`.
+
 ## [1.2.0] - 2026-09-16
 
 ### Added
@@ -79,6 +97,7 @@ A source can revise an already-published filing (a corrected amount, a re-filed 
 - Congress Lobbying × Trades Overlap pipeline: joins House and Senate trade data with federal lobbying disclosures (LDA) by member, quarter, and sector.
 - Hosted actors published on Apify: `congress-trading-pipeline` (Senate), `congress-trading-pipeline-1` (House), `congress-lobbying-trades-overlap`.
 
+[1.3.0]: https://github.com/seralifatih/congress-trading-pipeline/releases/tag/v1.3.0
 [1.2.0]: https://github.com/seralifatih/congress-trading-pipeline/releases/tag/v1.2.0
 [lobbying-overlap 0.1.0]: https://github.com/seralifatih/congress-trading-pipeline/releases/tag/lobbying-overlap-v0.1.0
 [1.1.0]: https://github.com/seralifatih/congress-trading-pipeline/releases/tag/v1.1.0
