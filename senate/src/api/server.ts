@@ -29,7 +29,7 @@ function serialize(t: Transaction): Record<string, unknown> {
     filer_name: t.politician,
     filer_type: 'congress' as const,
     party: null,                        // TODO (open question 5b): populate from DB once party column added
-    trade_type: t.type === 'buy' ? 'purchase' : t.type === 'sell' ? 'sale' : 'exchange',
+    trade_type: t.type === 'buy' ? 'purchase' : t.type === 'sell' ? 'sale' : t.type === 'exchange' ? 'exchange' : null,
     ticker: t.ticker,
     company_name: null,                 // Phase 2: ticker→company enrichment
     asset_name: t.asset_name,
@@ -38,7 +38,7 @@ function serialize(t: Transaction): Record<string, unknown> {
     amount_high: t.amount_max,
     // TODO (open question 5a): amount_midpoint not in Transaction schema yet;
     // compute here once amount_max is always present, or handle null case.
-    amount_midpoint: t.amount_max !== null
+    amount_midpoint: t.amount_min !== null && t.amount_max !== null
       ? Math.round((t.amount_min + t.amount_max) / 2)
       : null,
     trade_date: t.transaction_date,

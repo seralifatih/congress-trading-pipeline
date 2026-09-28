@@ -12,7 +12,7 @@
     "runStats": {
       "type": "string",
       "title": "Run summary",
-      "description": "Pipeline run statistics: inserted, skipped, errors. Stored under OUTPUT key.",
+      "description": "Pipeline run statistics: inserted, skipped, errors, electronicPtrCount, paperCount, emptyPtrCount, unknownDocTypeCount, unknownDocTypeExamples. Stored under OUTPUT key.",
       "template": "{{links.apiDefaultKeyValueStoreUrl}}/records/OUTPUT"
     }
   }

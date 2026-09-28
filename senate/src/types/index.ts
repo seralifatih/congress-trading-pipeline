@@ -18,6 +18,13 @@ export interface RawTransaction {
   // Never inferred from duplicate documents/rows.
   filing_type: 'original' | 'amendment' | null;
   amendment_number: number | null;
+  // 'ok' unless this row is a placeholder for a filing submitted on paper
+  // (Senate EFD serves it as a scanned image/PDF, not the structured HTML
+  // table electronic PTRs get) — see fetcher/senateFetcher.ts
+  // buildPaperPlaceholder. A placeholder row carries politician/filing_date/
+  // source_id/pdf_url only; every transaction-detail field below is blank.
+  parse_status: 'ok' | 'scanned_unparsed';
+  pdf_url: string | null;
   raw_json: Record<string, unknown>;
 }
 
@@ -26,15 +33,27 @@ export interface RawTransaction {
 export const TransactionSchema = z.object({
   id: z.string().optional(), // sha256 hex digest, not a UUID — see utils/dedup.ts
   politician: z.string().min(1),
-  transaction_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD'),
+  // Null only on a 'scanned_unparsed' placeholder row — see parse_status.
+  transaction_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD').nullable(),
   filing_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD'),
   ticker: z.string().nullable(),
-  asset_name: z.string().min(1),
-  asset_type: z.string().min(1),
-  type: z.enum(['buy', 'sell', 'exchange']),
-  amount_min: z.number().int().nonnegative(),
-  amount_max: z.number().int().nonnegative().nullable(),
-  owner: z.enum(['self', 'joint', 'spouse', 'child']),
+  asset_name: z.string().min(1).nullable(),
+  asset_type: z.string().min(1).nullable(),
+  // Derived, not sourced: Senate's own asset_type checkbox set has no ETF/Fund
+  // option, so filers commonly mark those as "Stock". Only set when asset_type
+  // is "Stock" and asset_name matches an ETF/Fund pattern — null otherwise,
+  // including for non-"Stock" types like "Other" or "Non-Public Stock", where
+  // a name-text guess would be less reliable than the source's own label.
+  // See transformer/normalize.ts deriveAssetSubtype.
+  asset_subtype: z.enum(['ETF', 'Mutual Fund']).nullable(),
+  type: z.enum(['buy', 'sell', 'exchange']).nullable(),
+  // Not always an integer: a single exact-amount disclosure (as opposed to a
+  // bracketed range) can report cents, e.g. "$2,722.50" — see the House
+  // actor's DocID 20034999 for a confirmed real-world case — and
+  // transformer/normalize.ts stripAmount.
+  amount_min: z.number().nonnegative().nullable(),
+  amount_max: z.number().nonnegative().nullable(),
+  owner: z.enum(['self', 'joint', 'spouse', 'child']).nullable(),
   source_id: z.string().min(1),
   // sha256 of politician|transaction_date|asset_name|type|amount_min|amount_max|owner
   // (source_id deliberately excluded) — see utils/dedup.ts computeContentHash.
@@ -49,12 +68,18 @@ export const TransactionSchema = z.object({
   filing_type: z.enum(['original', 'amendment']).nullable(),
   // Senate only: the N in "(Amendment N)". No equivalent exists on House.
   amendment_number: z.number().int().positive().nullable().optional(),
-  // Always 'ok' on Senate — the source is HTML, not a PDF, so there's no
-  // scanned/unreadable-filing case here. Field exists for schema parity with
-  // the House actor, whose PDF parser emits 'scanned_unparsed' placeholder
-  // rows for filings it can't read (see house/src/parser/housePdfParser.ts).
+  // 'scanned_unparsed': this filing was submitted on paper (Senate EFD serves
+  // it at /search/view/paper/<id>/, a scanned image/PDF viewer, not the
+  // structured HTML table electronic PTRs get at /search/view/ptr/<uuid>/) —
+  // there is no OCR fallback, so the row is a placeholder: every
+  // transaction-detail field below is null, and pdf_url points at the
+  // filing's detail page so a human can go look. 'ok' for every normally-
+  // parsed row. See fetcher/senateFetcher.ts buildPaperPlaceholder.
   parse_status: z.enum(['ok', 'scanned_unparsed']).default('ok'),
-  // Always null on Senate — no per-row source PDF (source is an HTML page).
+  // Populated only on a 'scanned_unparsed' placeholder row, where it points
+  // at the paper filing's detail page (no per-row PDF exists — the whole
+  // filing is one scanned document). Null on every normally-parsed row —
+  // Senate's electronic PTR source is an HTML page, not a per-row PDF.
   pdf_url: z.string().nullable().optional(),
   // ISO 8601 UTC timestamp — when this row (this exact id) was first pulled
   // from source. Set once at insert and never touched again; a re-fetch of
@@ -83,6 +108,24 @@ export interface FetchResult {
   success: boolean;
   records: RawTransaction[];
   error?: string;
+  // Filing-format counters for the run, from the listing's own link paths:
+  //   electronicPtrCount   — /search/view/ptr/<uuid>/ (structured HTML table)
+  //   paperCount           — /search/view/paper/<id>/ (scanned image/PDF)
+  //   emptyPtrCount        — a /ptr/ link whose detail page had zero table
+  //                          rows (parser/layout break, not a paper filing —
+  //                          never turned into a placeholder, just counted)
+  //   unknownDocTypeCount  — a listing row whose link matched NEITHER /ptr/
+  //                          nor /paper/ (a new/changed Senate EFD link shape
+  //                          this code doesn't recognize yet). Never silently
+  //                          dropped — logged via log.warn as it's found and
+  //                          counted here so a production run surfaces it.
+  //   unknownDocTypeExamples — up to 5 example URLs from unknownDocTypeCount,
+  //                            for diagnosing what the new shape looks like.
+  electronicPtrCount: number;
+  paperCount: number;
+  emptyPtrCount: number;
+  unknownDocTypeCount: number;
+  unknownDocTypeExamples: string[];
 }
 
 // ─── Query filters for the store / API layer ─────────────────────────────────
@@ -94,6 +137,7 @@ export interface QueryFilters {
   date_to?: string;    // YYYY-MM-DD inclusive
   type?: 'buy' | 'sell' | 'exchange';
   owner?: 'self' | 'joint' | 'spouse' | 'child';
+  parse_status?: 'ok' | 'scanned_unparsed';
   limit?: number;
   offset?: number;
 }

@@ -62,25 +62,27 @@ One row per individual transaction reported in a House PTR:
 |---|---|---|
 | `id` | `string` | SHA-256 of `politician\|date\|asset\|amount_min\|amount_max\|source_id` — unique per row, changes if source_id changes |
 | `politician` | `string` | Filer name as it appears on the PTR |
-| `transaction_date` | `YYYY-MM-DD \| null` | Trade execution date. `null` on a `scanned_unparsed` placeholder row — see `parse_status` |
+| `transaction_date` | `YYYY-MM-DD \| null` | Trade execution date. `null` on a placeholder row (`scanned_unparsed` or `parse_failed`) — see `parse_status` |
 | `filing_date` | `YYYY-MM-DD` | Date the PTR was submitted to the House Clerk |
-| `ticker` | `string \| null` | `null` for bonds, municipals, structured notes — also `null` on a `scanned_unparsed` placeholder row |
-| `asset_name` | `string \| null` | Full asset description. `null` on a `scanned_unparsed` placeholder row |
-| `asset_type` | `string \| null` | `Stock`, `Stock Option`, `Mutual Fund`, `Corporate Bond`, `Government Security`, etc. `null` on a `scanned_unparsed` placeholder row |
-| `type` | `'buy' \| 'sell' \| 'exchange' \| null` | `Purchase` → `buy`; `Sale (Full)`/`Sale (Partial)` → `sell`; `Exchange` (asset type code `[E]` — e.g. shares received/surrendered in a merger) → `exchange`. `null` on a `scanned_unparsed` placeholder row |
-| `amount_min` | `integer \| null` | Lower bound of reported amount range, USD. `null` on a `scanned_unparsed` placeholder row |
-| `amount_max` | `integer \| null` | Upper bound. `null` for unbounded "Over $X" disclosures, and on a `scanned_unparsed` placeholder row |
-| `owner` | `'self' \| 'joint' \| 'spouse' \| 'child' \| null` | Account owner per STOCK Act categories. `null` on a `scanned_unparsed` placeholder row |
-| `source_id` | `string` | Source PTR's DocID + row ordinal (`house_<DocID>_<row_index>`), or `house_<DocID>_scanned` for a placeholder row |
+| `ticker` | `string \| null` | `null` for bonds, municipals, structured notes — also `null` on a placeholder row |
+| `asset_name` | `string \| null` | Full asset description. `null` on a placeholder row |
+| `asset_type` | `string \| null` | `Stock`, `Stock Option`, `Mutual Fund`, `Corporate Bond`, `Government Security`, etc. `null` on a placeholder row |
+| `asset_subtype` | `'ETF' \| 'Mutual Fund' \| null` | Derived directly from the source PDF's own asset-type marker code (`[ET]` → `ETF`, `[MF]` → `Mutual Fund`) — a direct source signal, unlike the Senate actor's name-text guess. `null` for every other `asset_type`, and on a placeholder row |
+| `type` | `'buy' \| 'sell' \| 'exchange' \| null` | `Purchase` → `buy`; `Sale (Full)`/`Sale (Partial)` → `sell`; `Exchange` (asset type code `[E]` — e.g. shares received/surrendered in a merger) → `exchange`. `null` on a placeholder row |
+| `amount_min` | `integer \| null` | Lower bound of reported amount range, USD. `null` on a placeholder row |
+| `amount_max` | `integer \| null` | Upper bound. `null` for unbounded "Over $X" disclosures, and on a placeholder row |
+| `owner` | `'self' \| 'joint' \| 'spouse' \| 'child' \| null` | Account owner per STOCK Act categories. `null` on a placeholder row |
+| `source_id` | `string` | Source PTR's DocID + row ordinal (`house_<DocID>_<row_index>`), `house_<DocID>_scanned` for a scanned placeholder, or `house_<DocID>_parse_failed` for a parse-failed placeholder |
 | `content_hash` | `string` | SHA-256 of `politician\|date\|asset\|type\|amount_min\|amount_max\|owner` (source_id excluded) — see "Duplicate transactions across filings" below |
 | `filing_type` | `'original' \| 'amendment' \| null` | Read from the PTR's own per-row "Filing Status: New/Amended" line. `null` only when that line is missing or unrecognized — never guessed from duplication. No amendment-number equivalent exists in this source (unlike Senate) |
-| `parse_status` | `'ok' \| 'scanned_unparsed'` | `'ok'` for a normally-parsed row. `'scanned_unparsed'` means this filing's PDF has no extractable text layer (scanned/paper PTR, no OCR fallback) — see "Scanned and paper filings" below |
-| `pdf_url` | `string` | The source House PTR PDF this row was parsed from (or, for a `scanned_unparsed` row, the PDF that couldn't be read) |
+| `amendment_number` | `integer \| null` | Always `null` on this actor — schema parity with the Senate actor's "(Amendment N)" label, which has no equivalent in this source |
+| `parse_status` | `'ok' \| 'scanned_unparsed' \| 'parse_failed'` | `'ok'` for a normally-parsed row. `'scanned_unparsed'` means this filing's PDF has no extractable text layer at all (scanned/paper PTR, no OCR fallback). `'parse_failed'` means the PDF DOES have a text layer and transaction markers were found, but no row matched the expected shape — a parser gap, not a known source-format limitation. See "Scanned, paper, and parse-failed filings" below |
+| `pdf_url` | `string` | The source House PTR PDF this row was parsed from (or, for a placeholder row, the PDF that couldn't be read/matched) |
 | `fetchedAt` | `string` (ISO 8601 UTC) | When this row was first pulled from source. Immutable — never updated by a later re-fetch of the same, unchanged row. See "Fetch timestamps and immutable history" below |
 | `lastModifiedAt` | `string` (ISO 8601 UTC) | When this row's content last changed. Equal to `fetchedAt` until a revision is detected |
 | `revisionCount` | `integer` | How many times this source row's content has changed since it was first seen. `0` if never revised |
 
-### Scanned and paper filings
+### Scanned, paper, and parse-failed filings
 
 Older House PTRs were filed on paper and exist only as scanned images
 — the PDF has no text layer, and `pdf-parse` returns nothing. There is
@@ -88,10 +90,26 @@ no OCR fallback. Rather than dropping these filings silently, each one
 produces exactly one placeholder row: `politician`, `filing_date`,
 `source_id`, and `pdf_url` are populated, `parse_status` is
 `"scanned_unparsed"`, and every transaction-detail field
-(`transaction_date`, `ticker`, `asset_name`, `asset_type`, `type`,
-`amount_min`, `amount_max`, `owner`) is `null`. Filter these out with
-`parse_status = "ok"`, or use `pdf_url` to go read the filing yourself.
-In a recent 50-filing sample, roughly 12% of filings hit this path.
+(`transaction_date`, `ticker`, `asset_name`, `asset_type`,
+`asset_subtype`, `type`, `amount_min`, `amount_max`, `owner`) is `null`.
+
+A second, distinct placeholder exists for a different failure mode:
+`"parse_failed"`. Here the PDF *does* have a text layer and its
+`[XX]` transaction markers *were* found — so it's not a scanned/paper
+filing — but no transaction row matched the parser's expected
+amount/date/type-code shape (e.g. an unrecognized amount format). This
+signals a parser gap, not a known source-format limitation, and gets
+the same placeholder treatment: same fields populated, same fields
+null, `parse_status = "parse_failed"`.
+
+Filter both out with `parse_status = "ok"`, or use `pdf_url` to go
+read the filing yourself. In a recent 90-day sample (133 filings),
+roughly 14% hit `scanned_unparsed`; `parse_failed` is expected to be
+rare (it fires only when a real filing exposes a parser gap) — each
+occurrence is a signal to add a fixture and extend the parser, not a
+steady-state percentage like the scanned rate. Every pipeline run logs
+and reports a `parseFailedCount` (see the run's `OUTPUT` key-value
+record) so a new gap doesn't go unnoticed.
 
 ### Duplicate transactions across filings
 
@@ -164,7 +182,7 @@ Apify CLI:
 apify mcp install cursor --tools seralifatih/congress-trading-pipeline,seralifatih/congress-trading-pipeline-1
 ```
 
-On first connection you'll be asked to sign in to Apify. Runs are billed to your Apify account at the normal pay-per-result price.
+On first connection you'll be asked to sign in to Apify. Runs are billed to your Apify account at the normal pay-per-result price. On pay-per-event pricing, only a normally-parsed row is billed — a `scanned_unparsed` or `parse_failed` placeholder is written to the dataset for free.
 
 ---
 
@@ -198,7 +216,7 @@ On first connection you'll be asked to sign in to Apify. Runs are billed to your
 
 **6. Normalize + dedup + push.** Map source codes (`P`/`S`/`S (partial)`, `SP`/`DC`/`JT`) to the canonical schema, hash the natural key (including `source_id`) for a stable per-row `id`, push to the default Apify dataset. A separate `content_hash` (source_id excluded) lets you spot the same real-world trade reported across two different PTR documents — see "Duplicate transactions across filings" above. A same-`source_id` row with a changed `content_hash` is logged as a revision and its `revisionCount`/`lastModifiedAt` updated — see "Fetch timestamps and immutable history" above.
 
-Older filings filed on paper produce scanned-image PDFs that `pdf-parse` can't extract from. There is no OCR fallback, so the parser emits a `parse_status: "scanned_unparsed"` placeholder row for that filing instead of dropping it — see "Scanned and paper filings" above. Roughly 12% of recent PTRs hit this path. OCR fallback is on the Phase 2 list.
+Older filings filed on paper produce scanned-image PDFs that `pdf-parse` can't extract from. There is no OCR fallback, so the parser emits a `parse_status: "scanned_unparsed"` placeholder row for that filing instead of dropping it — see "Scanned, paper, and parse-failed filings" above. In a recent 90-day sample (133 filings), roughly 14% hit this path. OCR fallback is on the Phase 2 list. A filing whose markers were found but whose row shape the parser doesn't recognize gets a separate `parse_status: "parse_failed"` placeholder instead — same section above.
 
 ---
 

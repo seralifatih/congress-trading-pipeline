@@ -54,14 +54,14 @@
       "parse_status": {
         "type": "string",
         "title": "Parse status",
-        "description": "Always 'ok' on this actor — the Senate source is HTML, not a PDF, so there's no scanned/unreadable-filing case here. Present for schema parity with the House actor, whose PDF parser can emit a 'scanned_unparsed' placeholder row for a filing it can't read (no OCR fallback).",
+        "description": "'ok' for a normally-parsed row. 'scanned_unparsed' means this filing was submitted on paper — Senate EFD serves it as a scanned image/PDF at /search/view/paper/<id>/, not the structured HTML table electronic PTRs get, and there is no OCR fallback. The row is a placeholder: every transaction-detail field (transaction_date, ticker, asset_name, asset_type, asset_subtype, type, amount_min, amount_max, owner) is null, and pdf_url points at the filing's detail page.",
         "enum": ["ok", "scanned_unparsed"],
         "example": "ok"
       },
       "pdf_url": {
         "type": ["string", "null"],
         "title": "Source PDF URL",
-        "description": "Always null on this actor — the Senate source is an HTML page, not a per-row PDF.",
+        "description": "Populated only on a 'scanned_unparsed' placeholder row, pointing at the paper filing's detail page (no per-row PDF exists — the whole filing is one scanned document). Null on every normally-parsed row — Senate's electronic PTR source is an HTML page, not a per-row PDF.",
         "example": null
       },
       "fetchedAt": {
@@ -89,9 +89,9 @@
         "example": "Tommy Tuberville"
       },
       "transaction_date": {
-        "type": "string",
+        "type": ["string", "null"],
         "title": "Transaction date",
-        "description": "ISO date (YYYY-MM-DD) when the trade was executed.",
+        "description": "ISO date (YYYY-MM-DD) when the trade was executed. Null on a 'scanned_unparsed' placeholder row — see parse_status.",
         "example": "2026-04-15"
       },
       "filing_date": {
@@ -107,41 +107,48 @@
         "example": "NVDA"
       },
       "asset_name": {
-        "type": "string",
+        "type": ["string", "null"],
         "title": "Asset name",
-        "description": "Full asset description as reported on the PTR.",
+        "description": "Full asset description as reported on the PTR. Null on a 'scanned_unparsed' placeholder row.",
         "example": "NVIDIA Corporation - Common Stock"
       },
       "asset_type": {
-        "type": "string",
+        "type": ["string", "null"],
         "title": "Asset type",
-        "description": "Senate EFD asset classification.",
+        "description": "Senate EFD asset classification. Null on a 'scanned_unparsed' placeholder row.",
         "example": "Stock"
       },
+      "asset_subtype": {
+        "type": ["string", "null"],
+        "title": "Asset subtype",
+        "description": "Derived from asset_name, only when asset_type is 'Stock': Senate's own asset-type checkboxes have no ETF/mutual-fund option, so filers commonly mark those as 'Stock'. 'ETF' when asset_name contains the word 'ETF'; 'Mutual Fund' when it contains 'Fund' (optionally preceded by 'Mutual' or 'Index'). Null for every other asset_type (e.g. 'Other', 'Non-Public Stock') — there, the source's own label is treated as more reliable than a name-text guess. Also null on a 'scanned_unparsed' placeholder row.",
+        "enum": ["ETF", "Mutual Fund", null],
+        "example": "ETF"
+      },
       "type": {
-        "type": "string",
+        "type": ["string", "null"],
         "title": "Trade type",
-        "description": "Normalized to 'buy' (Purchase), 'sell' (Sale Full / Sale Partial), or 'exchange' (an asset swap, e.g. a called security or merger conversion — reported by the source as its own transaction type, not a buy or sell).",
-        "enum": ["buy", "sell", "exchange"],
+        "description": "Normalized to 'buy' (Purchase), 'sell' (Sale Full / Sale Partial), or 'exchange' (an asset swap, e.g. a called security or merger conversion — reported by the source as its own transaction type, not a buy or sell). Null on a 'scanned_unparsed' placeholder row.",
+        "enum": ["buy", "sell", "exchange", null],
         "example": "buy"
       },
       "amount_min": {
-        "type": "integer",
+        "type": ["number", "null"],
         "title": "Amount lower bound",
-        "description": "Lower bound of the reported amount range, in USD.",
+        "description": "Lower bound of the reported amount range, in USD. Usually a whole dollar disclosure bracket, but a single exact-amount disclosure can carry cents (e.g. 2722.5). Null on a 'scanned_unparsed' placeholder row.",
         "example": 1001
       },
       "amount_max": {
-        "type": ["integer", "null"],
+        "type": ["number", "null"],
         "title": "Amount upper bound",
-        "description": "Upper bound of the reported amount range, in USD. Null for unbounded 'Over $X' brackets.",
+        "description": "Upper bound of the reported amount range, in USD. Usually a whole dollar disclosure bracket, but a single exact-amount disclosure can carry cents (e.g. 2722.5). Null for unbounded 'Over $X' brackets, and on a 'scanned_unparsed' placeholder row.",
         "example": 15000
       },
       "owner": {
-        "type": "string",
+        "type": ["string", "null"],
         "title": "Owner",
-        "description": "Account owner classification per STOCK Act.",
-        "enum": ["self", "joint", "spouse", "child"],
+        "description": "Account owner classification per STOCK Act. Null on a 'scanned_unparsed' placeholder row.",
+        "enum": ["self", "joint", "spouse", "child", null],
         "example": "self"
       }
     }
@@ -209,6 +216,7 @@
           "ticker",
           "asset_name",
           "asset_type",
+          "asset_subtype",
           "type",
           "amount_min",
           "amount_max",

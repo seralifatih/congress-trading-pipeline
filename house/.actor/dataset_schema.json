@@ -45,17 +45,23 @@
         "enum": ["original", "amendment", null],
         "example": "original"
       },
+      "amendment_number": {
+        "type": ["integer", "null"],
+        "title": "Amendment number",
+        "description": "Always null on this actor — schema parity with the Senate actor's \"(Amendment N)\" label, which has no equivalent in the House source (House only exposes a New/Amended flag, not a number).",
+        "example": null
+      },
       "parse_status": {
         "type": "string",
         "title": "Parse status",
-        "description": "'ok' for a normally-parsed row. 'scanned_unparsed' means this filing's PDF has no extractable text layer (a scanned/paper PTR) — there is no OCR fallback, so the row is a placeholder: every transaction-detail field (transaction_date, ticker, asset_name, asset_type, type, amount_min, amount_max, owner) is null, and pdf_url points at the source PDF.",
-        "enum": ["ok", "scanned_unparsed"],
+        "description": "'ok' for a normally-parsed row. 'scanned_unparsed' means this filing's PDF has no extractable text layer at all (a scanned/paper PTR) — there is no OCR fallback. 'parse_failed' means the PDF DOES have a text layer and transaction markers were found, but no row matched the expected amount/date/type-code shape — a parser gap, not a known source-format limitation. Both are placeholders: every transaction-detail field (transaction_date, ticker, asset_name, asset_type, asset_subtype, type, amount_min, amount_max, owner) is null, and pdf_url points at the source PDF.",
+        "enum": ["ok", "scanned_unparsed", "parse_failed"],
         "example": "ok"
       },
       "pdf_url": {
         "type": ["string", "null"],
         "title": "Source PDF URL",
-        "description": "URL of the House PTR PDF this row was parsed from (or, for a 'scanned_unparsed' row, the PDF that couldn't be read).",
+        "description": "URL of the House PTR PDF this row was parsed from (or, for a 'scanned_unparsed'/'parse_failed' row, the PDF that couldn't be read/matched).",
         "example": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/20034201.pdf"
       },
       "fetchedAt": {
@@ -85,7 +91,7 @@
       "transaction_date": {
         "type": ["string", "null"],
         "title": "Transaction date",
-        "description": "ISO date (YYYY-MM-DD) when the trade was executed. Null on a 'scanned_unparsed' placeholder row.",
+        "description": "ISO date (YYYY-MM-DD) when the trade was executed. Null on a placeholder row ('scanned_unparsed' or 'parse_failed').",
         "example": "2026-04-15"
       },
       "filing_date": {
@@ -97,44 +103,51 @@
       "ticker": {
         "type": ["string", "null"],
         "title": "Ticker",
-        "description": "Stock ticker. Null for bonds, municipal securities, structured notes, and other non-equity instruments — also null on a 'scanned_unparsed' placeholder row.",
+        "description": "Stock ticker. Null for bonds, municipal securities, structured notes, and other non-equity instruments — also null on a placeholder row ('scanned_unparsed' or 'parse_failed').",
         "example": "NVDA"
       },
       "asset_name": {
         "type": ["string", "null"],
         "title": "Asset name",
-        "description": "Full asset description as reported on the PTR. Null on a 'scanned_unparsed' placeholder row.",
+        "description": "Full asset description as reported on the PTR. Null on a placeholder row ('scanned_unparsed' or 'parse_failed').",
         "example": "NVIDIA Corporation - Common Stock"
       },
       "asset_type": {
         "type": ["string", "null"],
         "title": "Asset type",
-        "description": "House asset classification. Null on a 'scanned_unparsed' placeholder row.",
+        "description": "House asset classification. Null on a placeholder row ('scanned_unparsed' or 'parse_failed').",
         "example": "Stock"
+      },
+      "asset_subtype": {
+        "type": ["string", "null"],
+        "title": "Asset subtype",
+        "description": "Derived directly from the source PDF's own asset-type marker code (ET → 'ETF', MF → 'Mutual Fund') — a direct source signal, unlike the Senate actor's name-text guess. Null for every other asset_type, and on a placeholder row ('scanned_unparsed' or 'parse_failed').",
+        "enum": ["ETF", "Mutual Fund", null],
+        "example": "ETF"
       },
       "type": {
         "type": ["string", "null"],
         "title": "Trade type",
-        "description": "Normalized to 'buy' (Purchase), 'sell' (Sale Full / Sale Partial), or 'exchange' (asset type code [E] — an asset swap, e.g. a called security or merger conversion — reported by the source as its own transaction type, not a buy or sell). Null on a 'scanned_unparsed' placeholder row.",
+        "description": "Normalized to 'buy' (Purchase), 'sell' (Sale Full / Sale Partial), or 'exchange' (asset type code [E] — an asset swap, e.g. a called security or merger conversion — reported by the source as its own transaction type, not a buy or sell). Null on a placeholder row ('scanned_unparsed' or 'parse_failed').",
         "enum": ["buy", "sell", "exchange", null],
         "example": "buy"
       },
       "amount_min": {
-        "type": ["integer", "null"],
+        "type": ["number", "null"],
         "title": "Amount lower bound",
-        "description": "Lower bound of the reported amount range, in USD. Null on a 'scanned_unparsed' placeholder row.",
+        "description": "Lower bound of the reported amount range, in USD. Usually a whole dollar disclosure bracket, but a single exact-amount disclosure can carry cents (e.g. 2722.5). Null on a placeholder row ('scanned_unparsed' or 'parse_failed').",
         "example": 1001
       },
       "amount_max": {
-        "type": ["integer", "null"],
+        "type": ["number", "null"],
         "title": "Amount upper bound",
-        "description": "Upper bound of the reported amount range, in USD. Null for unbounded 'Over $X' brackets, and on a 'scanned_unparsed' placeholder row.",
+        "description": "Upper bound of the reported amount range, in USD. Usually a whole dollar disclosure bracket, but a single exact-amount disclosure can carry cents (e.g. 2722.5). Null for unbounded 'Over $X' brackets, and on a placeholder row ('scanned_unparsed' or 'parse_failed').",
         "example": 15000
       },
       "owner": {
         "type": ["string", "null"],
         "title": "Owner",
-        "description": "Account owner classification per STOCK Act. Null on a 'scanned_unparsed' placeholder row.",
+        "description": "Account owner classification per STOCK Act. Null on a placeholder row ('scanned_unparsed' or 'parse_failed').",
         "enum": ["self", "joint", "spouse", "child", null],
         "example": "self"
       }
@@ -203,6 +216,7 @@
           "ticker",
           "asset_name",
           "asset_type",
+          "asset_subtype",
           "type",
           "amount_min",
           "amount_max",
@@ -210,6 +224,7 @@
           "source_id",
           "content_hash",
           "filing_type",
+          "amendment_number",
           "parse_status",
           "pdf_url",
           "fetchedAt",

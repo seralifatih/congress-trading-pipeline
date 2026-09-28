@@ -258,15 +258,34 @@ function extractText(htmlOrText: string): string {
   return htmlOrText.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
 }
 
+// Electronic PTRs are served at /search/view/ptr/<uuid>/ — a structured HTML
+// table we can parse row-by-row. Filings submitted on paper are served at
+// /search/view/paper/<id>/ instead — a scanned image/PDF viewer, no table,
+// no OCR fallback. The two paths are how the listing itself tells us which
+// kind a filing is, before we ever fetch its detail page.
+const PTR_PATH_RE = /\/ptr\/([a-f0-9-]+)/i;
+const PAPER_PATH_RE = /\/paper\/([a-z0-9-]+)/i;
+
 interface FilingMeta {
   politician: string;
   filing_date: string;
   report_path: string;
-  ptr_uuid: string;
+  doc_id: string;
+  docType: 'ptr' | 'paper';
   office: string;
 }
 
-function rowToFilingMeta(row: string[]): FilingMeta | null {
+// Distinguishes "row too malformed to read at all" (missing name/date
+// cells — not a filing-format signal, just bad row data) from "row was
+// readable but its link matched neither /ptr/ nor /paper/" (a real,
+// unrecognized filing-format signal worth counting — see
+// unknownDocTypeCount in fetchAllFilings/fetchPage). Never silently merged:
+// a caller that only checked for null would treat both the same way.
+interface UnknownDocTypeRow {
+  reportPath: string;
+}
+
+function rowToFilingMetaOrUnknown(row: string[]): FilingMeta | UnknownDocTypeRow | null {
   if (row.length < 5) return null;
 
   const [firstNameCell, lastNameCell, officeCell, reportCell, filedDateCell] = row;
@@ -274,16 +293,37 @@ function rowToFilingMeta(row: string[]): FilingMeta | null {
 
   const reportLinkMatch = reportCell.match(HREF_RE);
   const reportPath = reportLinkMatch?.[1] ?? '';
-  const uuidMatch = reportPath.match(/\/ptr\/([a-f0-9-]+)/i);
-  if (!uuidMatch) return null; // No PTR link — can't fetch transactions
+
+  const ptrMatch = reportPath.match(PTR_PATH_RE);
+  const paperMatch = reportPath.match(PAPER_PATH_RE);
+  const docType: 'ptr' | 'paper' | null = ptrMatch ? 'ptr' : paperMatch ? 'paper' : null;
+  const docId = ptrMatch?.[1] ?? paperMatch?.[1];
+  if (!docType || !docId) return { reportPath }; // Neither link shape — unrecognized, not unreadable
 
   return {
     politician: `${extractText(firstNameCell)} ${extractText(lastNameCell)}`.trim(),
     filing_date: extractText(filedDateCell),
     report_path: reportPath,
-    ptr_uuid: uuidMatch[1]!,
+    doc_id: docId,
+    docType,
     office: extractText(officeCell ?? ''),
   };
+}
+
+function isFilingMeta(v: FilingMeta | UnknownDocTypeRow | null): v is FilingMeta {
+  return v !== null && 'docType' in v;
+}
+
+function isUnknownDocTypeRow(v: FilingMeta | UnknownDocTypeRow | null): v is UnknownDocTypeRow {
+  return v !== null && !isFilingMeta(v);
+}
+
+// Kept for direct unit testing (tests/senateFetcher.test.js) — returns null
+// for the unknown-link-shape case too, collapsing the distinction that
+// rowToFilingMetaOrUnknown preserves for the production listing loops.
+export function rowToFilingMeta(row: string[]): FilingMeta | null {
+  const result = rowToFilingMetaOrUnknown(row);
+  return isFilingMeta(result) ? result : null;
 }
 
 // ─── PTR detail page fetch + parse ────────────────────────────────────────────
@@ -385,7 +425,19 @@ function parseFilingType(html: string): { filing_type: 'original' | 'amendment' 
   return { filing_type: null, amendment_number: null };
 }
 
-function parsePtrTransactions(html: string, meta: FilingMeta): RawTransaction[] {
+// A /ptr/ link's detail page had zero table rows. Distinct from a paper
+// filing (that's a separate link shape, caught before we ever fetch the
+// detail page) — this means the HTML table selectors below didn't match
+// something they should have: a parser bug or a Senate EFD layout change.
+// Never turned into a placeholder row (it isn't a known-unreadable filing,
+// it's an unexplained one) — the caller just counts it via `isEmpty` so
+// production runs surface how often it happens.
+interface PtrParseResult {
+  records: RawTransaction[];
+  isEmpty: boolean;
+}
+
+export function parsePtrTransactions(html: string, meta: FilingMeta): PtrParseResult {
   const $ = cheerio.load(html);
   const out: RawTransaction[] = [];
   const { filing_type, amendment_number } = parseFilingType(html);
@@ -401,9 +453,9 @@ function parsePtrTransactions(html: string, meta: FilingMeta): RawTransaction[] 
     const tableCount = $('table').length;
     const formAction = $('form').first().attr('action') ?? '(none)';
     const snippet = html.slice(0, 600).replace(/\s+/g, ' ');
-    log.warn(`PTR ${meta.ptr_uuid}: no rows. title="${title}" tables=${tableCount} form="${formAction}"`);
-    log.warn(`PTR ${meta.ptr_uuid} html-head: ${snippet}`);
-    return out;
+    log.warn(`PTR ${meta.doc_id}: no rows. title="${title}" tables=${tableCount} form="${formAction}"`);
+    log.warn(`PTR ${meta.doc_id} html-head: ${snippet}`);
+    return { records: out, isEmpty: true };
   }
 
   rows.each((idx, el) => {
@@ -423,11 +475,13 @@ function parsePtrTransactions(html: string, meta: FilingMeta): RawTransaction[] 
       type: txType ?? '',
       amount: amount ?? '',
       owner: owner ?? '',
-      source_id: `${meta.ptr_uuid}|${idx}`,
+      source_id: `${meta.doc_id}|${idx}`,
       filing_type,
       amendment_number,
+      parse_status: 'ok',
+      pdf_url: null,
       raw_json: {
-        ptr_uuid: meta.ptr_uuid,
+        ptr_uuid: meta.doc_id,
         row_index: idx,
         cells,
         office: meta.office,
@@ -435,7 +489,44 @@ function parsePtrTransactions(html: string, meta: FilingMeta): RawTransaction[] 
     });
   });
 
-  return out;
+  return { records: out, isEmpty: false };
+}
+
+// ─── Paper filing placeholder ─────────────────────────────────────────────────
+// A filing submitted on paper has no per-transaction data to extract — the
+// whole filing is one scanned image/PDF, no OCR fallback. Mirrors House's
+// scanned-PDF placeholder (housePdfParser.ts) for schema parity: every
+// transaction-detail field is blank/null after normalize.ts, and pdf_url
+// points at the filing's own detail page (Senate has no per-row PDF even for
+// electronic filings, so "the detail page" is the closest equivalent here).
+
+export function buildPaperPlaceholder(meta: FilingMeta): RawTransaction {
+  const detailUrl = meta.report_path.startsWith('http')
+    ? meta.report_path
+    : `${BASE}${meta.report_path}`;
+
+  return {
+    politician: meta.politician,
+    transaction_date: '',
+    filing_date: meta.filing_date,
+    ticker: '',
+    asset_name: '',
+    asset_type: '',
+    type: '',
+    amount: '',
+    owner: '',
+    source_id: `${meta.doc_id}|paper`,
+    filing_type: null,
+    amendment_number: null,
+    parse_status: 'scanned_unparsed',
+    pdf_url: detailUrl,
+    raw_json: {
+      doc_id: meta.doc_id,
+      docType: 'paper',
+      office: meta.office,
+      paper: true,
+    },
+  };
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -460,13 +551,57 @@ async function delay(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Max example URLs to log per run — enough to spot a pattern without
+// flooding the log if a Senate EFD layout change breaks classification for
+// many rows at once.
+const MAX_UNKNOWN_DOC_TYPE_EXAMPLES = 5;
+
+// Splits a batch of raw listing rows into recognized FilingMeta plus a
+// running unknown-link-shape tally, logging each unknown row's URL (up to
+// the cap) as it's found — never silently dropped. `seenSoFar` lets callers
+// accumulate the cap across multiple listing pages in one run.
+export function collectFilings(
+  rows: string[][],
+  unknownExamples: string[],
+): { filings: FilingMeta[]; unknownCount: number } {
+  const filings: FilingMeta[] = [];
+  let unknownCount = 0;
+
+  for (const row of rows) {
+    const result = rowToFilingMetaOrUnknown(row);
+    if (isFilingMeta(result)) {
+      filings.push(result);
+    } else if (isUnknownDocTypeRow(result)) {
+      unknownCount++;
+      const url = result.reportPath.startsWith('http') ? result.reportPath : `${BASE}${result.reportPath}`;
+      if (unknownExamples.length < MAX_UNKNOWN_DOC_TYPE_EXAMPLES) {
+        unknownExamples.push(url);
+        log.warn(`Unrecognized listing link (neither /ptr/ nor /paper/): ${url}`);
+      }
+    }
+    // result === null: row too malformed to read (missing name/date cells) —
+    // not a filing-format signal, already covered by existing row-shape guards.
+  }
+
+  return { filings, unknownCount };
+}
+
 async function fetchAllFilings(
   client: AxiosInstance,
   csrf: string,
   fromDate: string,
   toDate: string,
-): Promise<{ filings: FilingMeta[]; total: number; partial: boolean; error?: string }> {
+): Promise<{
+  filings: FilingMeta[];
+  total: number;
+  partial: boolean;
+  unknownDocTypeCount: number;
+  unknownDocTypeExamples: string[];
+  error?: string;
+}> {
   const filings: FilingMeta[] = [];
+  const unknownDocTypeExamples: string[] = [];
+  let unknownDocTypeCount = 0;
   let total = 0;
   let drawCounter = 1;
 
@@ -477,10 +612,12 @@ async function fetchAllFilings(
       500,
     );
     total = first.recordsFiltered ?? first.recordsTotal ?? 0;
-    filings.push(...first.data.map(rowToFilingMeta).filter((f): f is FilingMeta => f !== null));
+    const collected = collectFilings(first.data, unknownDocTypeExamples);
+    filings.push(...collected.filings);
+    unknownDocTypeCount += collected.unknownCount;
     log.info(`Listing: ${total} filings reported`);
   } catch (err) {
-    return { filings, total: 0, partial: true, error: toAxiosMessage(err) };
+    return { filings, total: 0, partial: true, unknownDocTypeCount, unknownDocTypeExamples, error: toAxiosMessage(err) };
   }
 
   let offset = PAGE_SIZE;
@@ -492,19 +629,30 @@ async function fetchAllFilings(
         500,
       );
       if (page.data.length === 0) break;
-      filings.push(...page.data.map(rowToFilingMeta).filter((f): f is FilingMeta => f !== null));
+      const collected = collectFilings(page.data, unknownDocTypeExamples);
+      filings.push(...collected.filings);
+      unknownDocTypeCount += collected.unknownCount;
       offset += PAGE_SIZE;
     } catch (err) {
       return {
         filings,
         total,
         partial: true,
+        unknownDocTypeCount,
+        unknownDocTypeExamples,
         error: `Listing pagination stopped at offset=${offset}: ${toAxiosMessage(err)}`,
       };
     }
   }
 
-  return { filings, total, partial: false };
+  if (unknownDocTypeCount > 0) {
+    log.warn(
+      `${unknownDocTypeCount} listing row(s) had an unrecognized link shape ` +
+      `(neither /ptr/ nor /paper/) — see examples above`,
+    );
+  }
+
+  return { filings, total, partial: false, unknownDocTypeCount, unknownDocTypeExamples };
 }
 
 export async function fetchPage(
@@ -522,30 +670,63 @@ export async function fetchPage(
       500,
     );
 
-    const filings = response.data
-      .map(rowToFilingMeta)
-      .filter((f): f is FilingMeta => f !== null);
+    const unknownDocTypeExamples: string[] = [];
+    const { filings, unknownCount: unknownDocTypeCount } = collectFilings(response.data, unknownDocTypeExamples);
 
     const records: RawTransaction[] = [];
+    let electronicPtrCount = 0;
+    let paperCount = 0;
+    let emptyPtrCount = 0;
     let activeCsrf = csrf;
+
     for (let i = 0; i < filings.length; i++) {
       const meta = filings[i]!;
+
+      if (meta.docType === 'paper') {
+        paperCount++;
+        records.push(buildPaperPlaceholder(meta));
+        continue; // No detail page worth fetching — it's a scanned image/PDF
+      }
+
       try {
         const result = await fetchPtrHtml(client, jar, meta.report_path, activeCsrf);
         activeCsrf = result.csrf;
-        records.push(...parsePtrTransactions(result.html, meta));
+        const { records: txs, isEmpty } = parsePtrTransactions(result.html, meta);
+        records.push(...txs);
+        if (isEmpty) emptyPtrCount++;
+        else electronicPtrCount++;
       } catch (err) {
-        log.warn(`PTR ${meta.ptr_uuid} fetch failed: ${toAxiosMessage(err)}`);
+        log.warn(`PTR ${meta.doc_id} fetch failed: ${toAxiosMessage(err)}`);
       }
       if (i < filings.length - 1) await delay(PTR_DELAY_MS);
     }
 
-    log.info(`Page offset=${offset}: ${filings.length} filings → ${records.length} transactions`);
-    return { success: true, records };
+    log.info(
+      `Page offset=${offset}: ${filings.length} filings → ${records.length} transactions ` +
+      `(electronic=${electronicPtrCount}, paper=${paperCount}, empty=${emptyPtrCount}, unknownDocType=${unknownDocTypeCount})`,
+    );
+    return {
+      success: true,
+      records,
+      electronicPtrCount,
+      paperCount,
+      emptyPtrCount,
+      unknownDocTypeCount,
+      unknownDocTypeExamples,
+    };
   } catch (err) {
     const message = toAxiosMessage(err);
     log.error(`fetchPage failed at offset=${offset}: ${message}`);
-    return { success: false, records: [], error: message };
+    return {
+      success: false,
+      records: [],
+      error: message,
+      electronicPtrCount: 0,
+      paperCount: 0,
+      emptyPtrCount: 0,
+      unknownDocTypeCount: 0,
+      unknownDocTypeExamples: [],
+    };
   }
 }
 
@@ -563,7 +744,16 @@ export async function fetchAll(
   } catch (err) {
     const message = toAxiosMessage(err);
     log.error(`Handshake failed: ${message}`);
-    return { success: false, records: [], error: `Handshake failed: ${message}` };
+    return {
+      success: false,
+      records: [],
+      error: `Handshake failed: ${message}`,
+      electronicPtrCount: 0,
+      paperCount: 0,
+      emptyPtrCount: 0,
+      unknownDocTypeCount: 0,
+      unknownDocTypeExamples: [],
+    };
   }
 
   // Phase 1: collect all filings via DataTables listing
@@ -573,6 +763,11 @@ export async function fetchAll(
       success: !listing.partial,
       records: [],
       error: listing.error ?? 'No filings found',
+      electronicPtrCount: 0,
+      paperCount: 0,
+      emptyPtrCount: 0,
+      unknownDocTypeCount: listing.unknownDocTypeCount,
+      unknownDocTypeExamples: listing.unknownDocTypeExamples,
     };
   }
   log.info(`Listing complete: ${listing.filings.length} PTR filings collected`);
@@ -580,6 +775,9 @@ export async function fetchAll(
   // Phase 2: fetch each PTR detail page, parse transactions
   const allRecords: RawTransaction[] = [];
   let detailErrors = 0;
+  let electronicPtrCount = 0;
+  let paperCount = 0;
+  let emptyPtrCount = 0;
 
   const filingsToFetch = DEBUG_PTR_LIMIT > 0
     ? listing.filings.slice(0, DEBUG_PTR_LIMIT)
@@ -591,6 +789,13 @@ export async function fetchAll(
   let activeCsrf = csrf;
   for (let i = 0; i < filingsToFetch.length; i++) {
     const meta = filingsToFetch[i]!;
+
+    if (meta.docType === 'paper') {
+      paperCount++;
+      allRecords.push(buildPaperPlaceholder(meta));
+      continue; // No detail page worth fetching — it's a scanned image/PDF
+    }
+
     try {
       const result = await withRetry(
         () => fetchPtrHtml(client, jar, meta.report_path, activeCsrf),
@@ -598,20 +803,24 @@ export async function fetchAll(
         500,
       );
       activeCsrf = result.csrf;
-      const txs = parsePtrTransactions(result.html, meta);
+      const { records: txs, isEmpty } = parsePtrTransactions(result.html, meta);
       allRecords.push(...txs);
+      if (isEmpty) emptyPtrCount++;
+      else electronicPtrCount++;
       if ((i + 1) % 10 === 0 || i === filingsToFetch.length - 1) {
         log.info(`Detail progress: ${i + 1}/${filingsToFetch.length} PTRs → ${allRecords.length} txs`);
       }
     } catch (err) {
       detailErrors++;
-      log.warn(`PTR ${meta.ptr_uuid} (${meta.politician}) detail fetch failed: ${toAxiosMessage(err)}`);
+      log.warn(`PTR ${meta.doc_id} (${meta.politician}) detail fetch failed: ${toAxiosMessage(err)}`);
     }
     if (i < filingsToFetch.length - 1) await delay(PTR_DELAY_MS);
   }
 
   log.info(
-    `fetchAll complete: ${listing.filings.length} filings → ${allRecords.length} transactions, ${detailErrors} detail errors`,
+    `fetchAll complete: ${listing.filings.length} filings → ${allRecords.length} transactions, ` +
+    `${detailErrors} detail errors (electronic=${electronicPtrCount}, paper=${paperCount}, ` +
+    `empty=${emptyPtrCount}, unknownDocType=${listing.unknownDocTypeCount})`,
   );
 
   // Partial = listing was incomplete OR ≥25% of detail fetches failed
@@ -621,10 +830,23 @@ export async function fetchAll(
       success: false,
       records: allRecords,
       error: listing.error ?? `${detailErrors}/${listing.filings.length} PTR detail fetches failed`,
+      electronicPtrCount,
+      paperCount,
+      emptyPtrCount,
+      unknownDocTypeCount: listing.unknownDocTypeCount,
+      unknownDocTypeExamples: listing.unknownDocTypeExamples,
     };
   }
 
-  return { success: true, records: allRecords };
+  return {
+    success: true,
+    records: allRecords,
+    electronicPtrCount,
+    paperCount,
+    emptyPtrCount,
+    unknownDocTypeCount: listing.unknownDocTypeCount,
+    unknownDocTypeExamples: listing.unknownDocTypeExamples,
+  };
 }
 
 // ─── Error helper ─────────────────────────────────────────────────────────────

@@ -15,6 +15,15 @@ export interface PipelineStats {
   inserted: number;
   skipped: number;
   errors: number;
+  // Filing-format counters for this run — see FetchResult in types/index.ts.
+  // Surfaced to Actor.setValue('OUTPUT', ...) so a production run's
+  // electronic-vs-paper ratio can be read back without re-scraping the
+  // listing separately.
+  electronicPtrCount: number;
+  paperCount: number;
+  emptyPtrCount: number;
+  unknownDocTypeCount: number;
+  unknownDocTypeExamples: string[];
 }
 
 export interface PipelineOptions {
@@ -33,10 +42,18 @@ export async function runPipeline(
 
   // ── Step 1: Fetch ────────────────────────────────────────────────────────────
   const fetchResult = await fetchAll(fromDate, toDate);
+  const { electronicPtrCount, paperCount, emptyPtrCount, unknownDocTypeCount, unknownDocTypeExamples } = fetchResult;
+  log.info(
+    `Filing formats: electronic=${electronicPtrCount}, paper=${paperCount}, ` +
+    `empty=${emptyPtrCount}, unknownDocType=${unknownDocTypeCount}`,
+  );
 
   if (!fetchResult.success && fetchResult.records.length === 0) {
     log.error(`Fetch failed with no records: ${fetchResult.error}`);
-    return { inserted: 0, skipped: 0, errors: 1 };
+    return {
+      inserted: 0, skipped: 0, errors: 1,
+      electronicPtrCount, paperCount, emptyPtrCount, unknownDocTypeCount, unknownDocTypeExamples,
+    };
   }
 
   if (!fetchResult.success) {
@@ -76,7 +93,10 @@ export async function runPipeline(
 
   if (normalized.length === 0) {
     log.warn('No valid records after normalization — nothing to store');
-    return { inserted: 0, skipped, errors: 0 };
+    return {
+      inserted: 0, skipped, errors: 0,
+      electronicPtrCount, paperCount, emptyPtrCount, unknownDocTypeCount, unknownDocTypeExamples,
+    };
   }
 
   // ── Step 4: Load existing for dedup ─────────────────────────────────────────
@@ -92,7 +112,10 @@ export async function runPipeline(
   log.info(`Dedup: ${netNew.length} net-new (${normalized.length - netNew.length} already stored)`);
 
   if (netNew.length === 0) {
-    return { inserted: 0, skipped, errors: 0 };
+    return {
+      inserted: 0, skipped, errors: 0,
+      electronicPtrCount, paperCount, emptyPtrCount, unknownDocTypeCount, unknownDocTypeExamples,
+    };
   }
 
   // ── Step 6: Assign IDs, fetch/revision metadata, and save ───────────────────
@@ -160,5 +183,8 @@ export async function runPipeline(
     errors = 1;
   }
 
-  return { inserted: withIds.length, skipped, errors };
+  return {
+    inserted: withIds.length, skipped, errors,
+    electronicPtrCount, paperCount, emptyPtrCount, unknownDocTypeCount, unknownDocTypeExamples,
+  };
 }

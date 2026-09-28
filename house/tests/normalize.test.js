@@ -1,66 +1,14 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { normalize, normalizeAll } = require('../dist/transformer/normalize.js');
-
-// Real row captured from Senate EFD PTR b999bc0e-3eb0-4ca9-ab07-8e8f2e04b41f
-// (Alan Armstrong, AvalonBay -> Vivmark asset exchange). Before the fix,
-// raw type "Exchange" had no TYPE_MAP entry, normalizeType() returned null,
-// and the row was silently dropped (reason=unrecognized_type).
-function exchangeRow(overrides = {}) {
-  return {
-    politician: 'Alan Armstrong',
-    transaction_date: '08/14/2026',
-    filing_date: '09/17/2026',
-    ticker: '--',
-    asset_name:
-      'AvalonBay Communities, Inc. Common Stock (AVB) (Exchanged) VMRK - Vivmark Residential Common Shares of Beneficial Interest (Received)',
-    asset_type: 'Stock',
-    type: 'Exchange',
-    amount: '$1,001 - $15,000',
-    owner: 'Joint',
-    source_id: 'b999bc0e-3eb0-4ca9-ab07-8e8f2e04b41f|2',
-    filing_type: 'original',
-    amendment_number: null,
-    raw_json: {},
-    ...overrides,
-  };
-}
-
-test('Senate "Exchange" rows normalize to type "exchange", not dropped', () => {
-  const result = normalize(exchangeRow());
-  assert.notEqual(result, null, 'exchange row must not be skipped as unrecognized_type');
-  assert.equal(result.type, 'exchange');
-  assert.equal(result.politician, 'Alan Armstrong');
-  assert.equal(result.amount_min, 1001);
-  assert.equal(result.amount_max, 15000);
-  assert.equal(result.owner, 'joint');
-  assert.equal(result.parse_status, 'ok');
-  assert.equal(result.pdf_url, null);
-});
-
-test('normalizeAll keeps an exchange row alongside buy/sell rows', () => {
-  const buyRow = exchangeRow({
-    type: 'Purchase',
-    source_id: 'b999bc0e-3eb0-4ca9-ab07-8e8f2e04b41f|0',
-  });
-  const results = normalizeAll([buyRow, exchangeRow()]);
-  assert.equal(results.length, 2, 'exchange row must survive normalizeAll, not be skipped');
-  assert.deepEqual(
-    results.map((r) => r.type).sort(),
-    ['buy', 'exchange'],
-  );
-});
-
-test('an actually-unrecognized type is still skipped (regression guard)', () => {
-  const result = normalize(exchangeRow({ type: 'Something Else Entirely' }));
-  assert.equal(result, null);
-});
+const { normalize } = require('../dist/transformer/normalize.js');
 
 // ─── Ticker fallback extraction from asset_name ───────────────────────────────
+// Mirrors senate/tests/normalize.test.js — same extraction logic is
+// duplicated in both actors' normalize.ts.
 
 function buyRow(overrides = {}) {
   return {
-    politician: 'Test Senator',
+    politician: 'Test Representative',
     transaction_date: '08/14/2026',
     filing_date: '09/17/2026',
     ticker: '',
@@ -71,10 +19,19 @@ function buyRow(overrides = {}) {
     owner: 'Self',
     source_id: 'test-source-id',
     filing_type: 'original',
-    amendment_number: null,
-    raw_json: {},
+    parse_status: 'ok',
+    pdf_url: 'https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/test.pdf',
     ...overrides,
   };
+}
+
+function exchangeRow(overrides = {}) {
+  return buyRow({
+    type: 'Exchange',
+    asset_name:
+      'AvalonBay Communities, Inc. Common Stock (AVB) (Exchanged) VMRK - Vivmark Residential Common Shares of Beneficial Interest (Received)',
+    ...overrides,
+  });
 }
 
 test('extracts ticker from trailing "(XXXX)" pattern', () => {
@@ -136,35 +93,38 @@ test('structured ticker field still takes priority over asset_name fallback', ()
   assert.equal(result.ticker, 'MSFT');
 });
 
-// ─── asset_subtype derivation (asset_type === "Stock" only) ────────────────────
+// ─── asset_subtype derivation ───────────────────────────────────────────────────
+// House's asset_type is already mapped from the source PDF's own marker code
+// by the time normalize() sees it (ASSET_TYPE_MAP in housePdfParser.ts: ET →
+// "ETF", MF → "Mutual Fund") — asset_subtype just projects that direct source
+// signal, unlike Senate's asset_name text guess. See housePdfParser.test.js
+// for coverage of the [ET]/[MF] marker-to-asset_type mapping itself.
 
-test('asset_subtype "ETF" for an ETF filed as asset_type "Stock"', () => {
+test('asset_subtype "ETF" when the source marker mapped asset_type to "ETF"', () => {
   const result = normalize(
-    buyRow({ asset_type: 'Stock', asset_name: 'iShares Core S&P 500 ETF' }),
+    buyRow({ asset_type: 'ETF', asset_name: 'iShares Core S&P 500 ETF', ticker: 'IVV' }),
   );
   assert.equal(result.asset_subtype, 'ETF');
 });
 
-test('asset_subtype "Mutual Fund" for a fund filed as asset_type "Stock"', () => {
+test('asset_subtype "Mutual Fund" when the source marker mapped asset_type to "Mutual Fund"', () => {
   const result = normalize(
     buyRow({
-      asset_type: 'Stock',
+      asset_type: 'Mutual Fund',
       asset_name: 'Westwood Quality SmallCap Fund - Institutional Ultra Shares',
     }),
   );
   assert.equal(result.asset_subtype, 'Mutual Fund');
 });
 
-test('asset_subtype "ETF" for a leveraged/2X ETF filed as asset_type "Stock"', () => {
+test('asset_subtype is null for a plain "Stock" asset_type', () => {
   const result = normalize(
-    buyRow({ asset_type: 'Stock', asset_name: 'Tradr 2X Long SPY Monthly ETF' }),
+    buyRow({ asset_type: 'Stock', asset_name: 'Wells Fargo & Company Common Stock' }),
   );
-  assert.equal(result.asset_subtype, 'ETF');
+  assert.equal(result.asset_subtype, null);
 });
 
-test('asset_subtype stays null when asset_type is not "Stock", even with "Fund" in the name', () => {
-  // Blumenthal-style row: source labels this "Other", not "Stock" — the
-  // fallback must not override a more-specific non-Stock source label.
+test('asset_subtype is null for "Other", even with "Fund" in the name', () => {
   const result = normalize(
     buyRow({
       asset_type: 'Other',
@@ -174,20 +134,12 @@ test('asset_subtype stays null when asset_type is not "Stock", even with "Fund" 
   assert.equal(result.asset_subtype, null);
 });
 
-test('asset_subtype is null for an ordinary stock with no ETF/Fund wording', () => {
-  const result = normalize(
-    buyRow({ asset_type: 'Stock', asset_name: 'Wells Fargo & Company Common Stock' }),
-  );
-  assert.equal(result.asset_subtype, null);
-});
-
 // ─── Amount parsing: single exact amount with cents ────────────────────────────
 
 test('a single exact-dollar amount with cents keeps its cents, not truncated to a whole dollar', () => {
   // Regression guard: stripAmount() used to run parseInt() on the cleaned
   // amount string, which silently truncates "2,722.50" to 2722 (parseInt
-  // stops at the first non-digit character, the decimal point). Confirmed
-  // real-world case: House DocID 20034999.
+  // stops at the first non-digit character, the decimal point).
   const result = normalize(buyRow({ amount: '$2,722.50' }));
   assert.equal(result.amount_min, 2722.5);
   assert.equal(result.amount_max, 2722.5);

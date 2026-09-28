@@ -1,0 +1,33 @@
+
+
+P        T           R
+Clerk of the House of Representatives • Legislative Resource Center • B81 Cannon Building • Washington, DC 20515
+F     I
+Name:Hon. Test Member
+Status:Member
+State/District:TS01
+T
+IDOwnerAssetTransaction
+Type
+DateNotification
+Date
+AmountCap.
+Gains >
+$200?
+SPWestwood Quality SmallCap Fund
+[MF]
+P07/14/202608/17/2026$1,001 - $15,000
+F      S     : New
+S          O : LIVTR
+* For the complete list of asset type abbreviations, please visit https://fd.house.gov/reference/asset-type-codes.aspx.
+I          V       D
+LIVTR (Owner: SP)
+L       : US
+I       P      O
+ Yes  No
+C                 S
+ I CERTIFY that the statements I have made on the attached Periodic Transaction Report are true, complete, and correct to the best of
+Filing ID #90000002
+
+my knowledge and belief. Further, I CERTIFY that I have disclosed all transactions as required by the STOCK Act.
+Digitally Signed: Hon. Test Member , 08/18/2026

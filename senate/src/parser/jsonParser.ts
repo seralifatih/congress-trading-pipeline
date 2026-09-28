@@ -44,6 +44,8 @@ export function parseJsonSource(source: EfdSource, id: string = ''): RawTransact
     // unavailable here, not inferred.
     filing_type: null,
     amendment_number: null,
+    parse_status: 'ok',
+    pdf_url: null,
     raw_json: source,
   };
 }

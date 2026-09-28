@@ -14,14 +14,15 @@ const CREATE_TABLE = `
   CREATE TABLE IF NOT EXISTS transactions (
     id              TEXT PRIMARY KEY,
     politician      TEXT NOT NULL,
-    transaction_date TEXT NOT NULL,
+    transaction_date TEXT,
     filing_date     TEXT NOT NULL,
     ticker          TEXT,
-    asset_name      TEXT NOT NULL,
+    asset_name      TEXT,
     asset_type      TEXT,
-    type            TEXT NOT NULL,
-    amount_min      INTEGER,
-    amount_max      INTEGER,
+    asset_subtype   TEXT,
+    type            TEXT,
+    amount_min      REAL,
+    amount_max      REAL,
     owner           TEXT,
     source_id       TEXT NOT NULL,
     content_hash    TEXT NOT NULL,
@@ -41,12 +42,13 @@ const CREATE_TABLE = `
 interface TransactionRow {
   id: string;
   politician: string;
-  transaction_date: string;
+  transaction_date: string | null;
   filing_date: string;
   ticker: string | null;
-  asset_name: string;
+  asset_name: string | null;
   asset_type: string | null;
-  type: string;
+  asset_subtype: string | null;
+  type: string | null;
   amount_min: number | null;
   amount_max: number | null;
   owner: string | null;
@@ -70,11 +72,12 @@ function rowToTransaction(row: TransactionRow): Transaction {
     filing_date: row.filing_date,
     ticker: row.ticker ?? null,
     asset_name: row.asset_name,
-    asset_type: row.asset_type ?? '',
+    asset_type: row.asset_type,
+    asset_subtype: row.asset_subtype as Transaction['asset_subtype'],
     type: row.type as Transaction['type'],
-    amount_min: row.amount_min ?? 0,
+    amount_min: row.amount_min,
     amount_max: row.amount_max ?? null,
-    owner: (row.owner ?? 'self') as Transaction['owner'],
+    owner: row.owner as Transaction['owner'],
     source_id: row.source_id ?? '',
     content_hash: row.content_hash ?? '',
     filing_type: row.filing_type as Transaction['filing_type'],
@@ -96,8 +99,8 @@ function rowToTransaction(row: TransactionRow): Transaction {
 // on every connect — no manual step.
 
 const REQUIRED_COLUMNS = [
-  'source_id', 'content_hash', 'filing_type', 'amendment_number', 'parse_status', 'pdf_url',
-  'fetchedAt', 'lastModifiedAt', 'revisionCount',
+  'source_id', 'content_hash', 'filing_type', 'amendment_number', 'asset_subtype',
+  'parse_status', 'pdf_url', 'fetchedAt', 'lastModifiedAt', 'revisionCount',
 ];
 
 function migrateIfNeeded(db: Database.Database): void {
@@ -154,12 +157,12 @@ export class SqliteStore implements StoreAdapter {
     const insert = this.db.prepare(`
       INSERT OR IGNORE INTO transactions
         (id, politician, transaction_date, filing_date, ticker,
-         asset_name, asset_type, type, amount_min, amount_max, owner, source_id,
+         asset_name, asset_type, asset_subtype, type, amount_min, amount_max, owner, source_id,
          content_hash, filing_type, amendment_number, parse_status, pdf_url,
          fetchedAt, lastModifiedAt, revisionCount)
       VALUES
         (@id, @politician, @transaction_date, @filing_date, @ticker,
-         @asset_name, @asset_type, @type, @amount_min, @amount_max, @owner, @source_id,
+         @asset_name, @asset_type, @asset_subtype, @type, @amount_min, @amount_max, @owner, @source_id,
          @content_hash, @filing_type, @amendment_number, @parse_status, @pdf_url,
          @fetchedAt, @lastModifiedAt, @revisionCount)
     `);
@@ -176,6 +179,7 @@ export class SqliteStore implements StoreAdapter {
           ticker: t.ticker ?? null,
           asset_name: t.asset_name,
           asset_type: t.asset_type,
+          asset_subtype: t.asset_subtype ?? null,
           type: t.type,
           amount_min: t.amount_min,
           amount_max: t.amount_max ?? null,
@@ -220,6 +224,10 @@ export class SqliteStore implements StoreAdapter {
     if (filters.owner) {
       conditions.push('owner = @owner');
       params['owner'] = filters.owner;
+    }
+    if (filters.parse_status) {
+      conditions.push('parse_status = @parse_status');
+      params['parse_status'] = filters.parse_status;
     }
     if (filters.date_from) {
       conditions.push('transaction_date >= @date_from');

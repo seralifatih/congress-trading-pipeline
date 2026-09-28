@@ -173,6 +173,8 @@ export function parseHtml(html: string): RawTransaction[] {
       // that carries the "(Amendment N)" label — genuinely unavailable here.
       filing_type: null,
       amendment_number: null,
+      parse_status: 'ok',
+      pdf_url: null,
       raw_json: raw,
     });
   });

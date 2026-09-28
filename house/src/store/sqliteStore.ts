@@ -19,13 +19,15 @@ const CREATE_TABLE = `
     ticker          TEXT,
     asset_name      TEXT,
     asset_type      TEXT,
+    asset_subtype   TEXT,
     type            TEXT,
-    amount_min      INTEGER,
-    amount_max      INTEGER,
+    amount_min      REAL,
+    amount_max      REAL,
     owner           TEXT,
     source_id       TEXT NOT NULL,
     content_hash    TEXT NOT NULL,
     filing_type     TEXT,
+    amendment_number INTEGER,
     parse_status    TEXT NOT NULL DEFAULT 'ok',
     pdf_url         TEXT,
     fetchedAt       TEXT NOT NULL,
@@ -45,6 +47,7 @@ interface TransactionRow {
   ticker: string | null;
   asset_name: string | null;
   asset_type: string | null;
+  asset_subtype: string | null;
   type: string | null;
   amount_min: number | null;
   amount_max: number | null;
@@ -52,6 +55,7 @@ interface TransactionRow {
   source_id: string | null;
   content_hash: string | null;
   filing_type: string | null;
+  amendment_number: number | null;
   parse_status: string;
   pdf_url: string | null;
   fetchedAt: string;
@@ -69,6 +73,7 @@ function rowToTransaction(row: TransactionRow): Transaction {
     ticker: row.ticker ?? null,
     asset_name: row.asset_name,
     asset_type: row.asset_type,
+    asset_subtype: row.asset_subtype as Transaction['asset_subtype'],
     type: row.type as Transaction['type'],
     amount_min: row.amount_min,
     amount_max: row.amount_max ?? null,
@@ -76,6 +81,7 @@ function rowToTransaction(row: TransactionRow): Transaction {
     source_id: row.source_id ?? '',
     content_hash: row.content_hash ?? '',
     filing_type: row.filing_type as Transaction['filing_type'],
+    amendment_number: row.amendment_number,
     parse_status: (row.parse_status as Transaction['parse_status']) ?? 'ok',
     pdf_url: row.pdf_url ?? null,
     fetchedAt: row.fetchedAt,
@@ -92,7 +98,7 @@ function rowToTransaction(row: TransactionRow): Transaction {
 // CREATE_TABLE below recreates it with the current shape. Runs automatically
 // on every connect — no manual step.
 
-const REQUIRED_COLUMNS = ['source_id', 'content_hash', 'filing_type', 'parse_status', 'pdf_url', 'fetchedAt', 'lastModifiedAt', 'revisionCount'];
+const REQUIRED_COLUMNS = ['source_id', 'content_hash', 'filing_type', 'amendment_number', 'asset_subtype', 'parse_status', 'pdf_url', 'fetchedAt', 'lastModifiedAt', 'revisionCount'];
 
 function migrateIfNeeded(db: Database.Database): void {
   const tableExists = db
@@ -148,12 +154,12 @@ export class SqliteStore implements StoreAdapter {
     const insert = this.db.prepare(`
       INSERT OR IGNORE INTO transactions
         (id, politician, transaction_date, filing_date, ticker,
-         asset_name, asset_type, type, amount_min, amount_max, owner, source_id,
-         content_hash, filing_type, parse_status, pdf_url, fetchedAt, lastModifiedAt, revisionCount)
+         asset_name, asset_type, asset_subtype, type, amount_min, amount_max, owner, source_id,
+         content_hash, filing_type, amendment_number, parse_status, pdf_url, fetchedAt, lastModifiedAt, revisionCount)
       VALUES
         (@id, @politician, @transaction_date, @filing_date, @ticker,
-         @asset_name, @asset_type, @type, @amount_min, @amount_max, @owner, @source_id,
-         @content_hash, @filing_type, @parse_status, @pdf_url, @fetchedAt, @lastModifiedAt, @revisionCount)
+         @asset_name, @asset_type, @asset_subtype, @type, @amount_min, @amount_max, @owner, @source_id,
+         @content_hash, @filing_type, @amendment_number, @parse_status, @pdf_url, @fetchedAt, @lastModifiedAt, @revisionCount)
     `);
 
     const saveMany = this.db.transaction((rows: Transaction[]) => {
@@ -168,6 +174,7 @@ export class SqliteStore implements StoreAdapter {
           ticker: t.ticker ?? null,
           asset_name: t.asset_name,
           asset_type: t.asset_type,
+          asset_subtype: t.asset_subtype ?? null,
           type: t.type,
           amount_min: t.amount_min,
           amount_max: t.amount_max ?? null,
@@ -175,6 +182,7 @@ export class SqliteStore implements StoreAdapter {
           source_id: t.source_id,
           content_hash: t.content_hash,
           filing_type: t.filing_type ?? null,
+          amendment_number: t.amendment_number ?? null,
           parse_status: t.parse_status,
           pdf_url: t.pdf_url ?? null,
           fetchedAt: t.fetchedAt,

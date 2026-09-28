@@ -49,6 +49,22 @@ async function main(): Promise<void> {
     });
 
     log.info('Actor complete', stats);
+    log.info(
+      `Filing formats this run: electronic_ptr_count=${stats.electronicPtrCount}, ` +
+      `paper_count=${stats.paperCount}, empty_ptr_count=${stats.emptyPtrCount}, ` +
+      `unknown_doc_type_count=${stats.unknownDocTypeCount}`,
+    );
+    if (stats.unknownDocTypeCount > 0) {
+      log.warn(
+        `${stats.unknownDocTypeCount} listing link(s) matched neither /ptr/ nor /paper/ — ` +
+        `Senate EFD may have changed its link format. Examples: ${stats.unknownDocTypeExamples.join(', ')}`,
+      );
+    }
+    // Written to the run's default key-value store under 'OUTPUT' — the
+    // standard Apify convention, visible in the console without a separate
+    // lookup. Includes electronicPtrCount/paperCount/emptyPtrCount/
+    // unknownDocTypeCount so the electronic-vs-paper ratio (and any new,
+    // unrecognized link shape) can be read back after any production run.
     await Actor.setValue('OUTPUT', stats);
   } catch (err) {
     log.error('Actor failed', { error: toErrorMessage(err) });

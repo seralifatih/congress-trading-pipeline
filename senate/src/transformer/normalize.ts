@@ -27,11 +27,16 @@ function normalizeType(raw: string): 'buy' | 'sell' | 'exchange' | null {
 //   "$500,000 - Over"    →  { min: 500000, max: null }
 //   "Over $50,000,000"   →  { min: 50000000, max: null }
 //   "$15,001"            →  { min: 15001, max: 15001 } (single value)
+//   "$2,722.50"          →  { min: 2722.5, max: 2722.5 } (single exact amount with cents)
 //   ""                   →  { min: 0, max: null }
 
 function stripAmount(s: string): number {
   const cleaned = s.replace(/[$,\s]/g, '');
-  const n = parseInt(cleaned, 10);
+  // parseFloat, not parseInt — a single exact-amount disclosure (as opposed
+  // to a bracketed range) can report cents, e.g. "$2,722.50" — see the
+  // House actor's DocID 20034999 for a confirmed real-world case.
+  // parseInt would silently truncate that to 2722.
+  const n = parseFloat(cleaned);
   return isNaN(n) ? 0 : n;
 }
 
@@ -118,6 +123,78 @@ function normalizeTicker(raw: string): string | null {
   return t;
 }
 
+// ─── Ticker fallback extraction (from asset_name) ─────────────────────────────
+// The Senate/House filings frequently embed the ticker in the free-text asset
+// name instead of (or in addition to) the dedicated ticker field, e.g.
+//   "Electronic Arts Inc. (EA)"
+//   "EA - Electronic Arts Inc"
+//   "AvalonBay Communities, Inc. Common Stock (AVB) (Exchanged) VMRK - Vivmark ..."
+// When the structured field comes back empty, fall back to pulling it out of
+// asset_name. 1-5 uppercase letters, optional ".X" share-class suffix.
+
+// Parenthesized words that are never tickers even though they match the
+// shape: entity suffixes and filing qualifiers, not real securities. State
+// postal codes are deliberately NOT on this list — several are also live
+// tickers (MA = Mastercard, MS = Morgan Stanley, DE = Deere, MO = Altria,
+// OR, HI, AR, IT...). Real "(City, ST)" addresses are excluded structurally
+// below (the paren content isn't purely uppercase letters), so a state-code
+// stoplist would only create false negatives without preventing any real
+// false positive.
+const TICKER_STOPLIST = new Set([
+  'LLC', 'LLP', 'LP', 'INC', 'CORP', 'CO', 'LTD', 'THE', 'ETF', 'REIT',
+  'EXCHANGED', 'RECEIVED', 'PARTIAL', 'FULL', 'NEW', 'OLD',
+]);
+
+const TICKER_TOKEN = /^[A-Z]{1,5}(\.[A-Z])?$/;
+
+function isPlausibleTicker(candidate: string): boolean {
+  return TICKER_TOKEN.test(candidate) && !TICKER_STOPLIST.has(candidate);
+}
+
+function extractTickerFromAssetName(assetName: string): string | null {
+  const name = assetName.trim();
+  if (!name) return null;
+
+  // Leading "XXXX - Company Name" pattern, e.g. "EA - Electronic Arts Inc"
+  const leadingMatch = name.match(/^([A-Z]{1,5}(?:\.[A-Z])?)\s*-\s*\S/);
+  if (leadingMatch && isPlausibleTicker(leadingMatch[1]!)) {
+    return leadingMatch[1]!;
+  }
+
+  // One or more "(XXXX)" parenthesized groups. A parenthesized group whose
+  // content isn't purely 1-5 uppercase letters (+ optional ".X" suffix) —
+  // e.g. "(Austin, TX)" or "(New York, NY)" — never matches this regex at
+  // all, so free-text city/state addresses are excluded structurally, not
+  // just by the stoplist. Exchange rows can carry multiple tickers (given
+  // asset, then received asset) — take the first plausible one, which
+  // corresponds to the asset actually being reported.
+  const parenMatches = name.matchAll(/\(([A-Z]{1,5}(?:\.[A-Z])?)\)/g);
+  for (const m of parenMatches) {
+    const candidate = m[1]!;
+    if (isPlausibleTicker(candidate)) return candidate;
+  }
+
+  return null;
+}
+
+// ─── Asset subtype derivation ──────────────────────────────────────────────────
+// Senate EFD's own "Asset Type" field has a limited checkbox set on the PTR
+// form, and filers routinely mark ETFs/mutual funds as "Stock" — there's no
+// distinct source signal, unlike House's PDF marker codes (ET/MF/ST). Only
+// probe asset_name for a subtype when the source itself said "Stock": a row
+// already typed "Other", "Non-Public Stock", etc. gets a null subtype, since
+// that source label is presumably more specific than a name-text guess.
+const ETF_PATTERN = /\bETF\b/;
+const FUND_PATTERN = /\b(?:Mutual\s+|Index\s+)?Fund\b/i;
+
+function deriveAssetSubtype(assetType: string, assetName: string): 'ETF' | 'Mutual Fund' | null {
+  if (assetType.trim().toLowerCase() !== 'stock') return null;
+
+  if (ETF_PATTERN.test(assetName)) return 'ETF';
+  if (FUND_PATTERN.test(assetName)) return 'Mutual Fund';
+  return null;
+}
+
 // ─── Validation ───────────────────────────────────────────────────────────────
 
 type SkipReason =
@@ -136,7 +213,41 @@ function skipReason(raw: RawTransaction, type: 'buy' | 'sell' | 'exchange' | nul
 
 // ─── Main export ──────────────────────────────────────────────────────────────
 
+// A 'scanned_unparsed' row is a placeholder for a filing submitted on paper
+// (Senate EFD serves it as a scanned image/PDF at /search/view/paper/<id>/,
+// not the structured HTML table electronic PTRs get) — every
+// transaction-detail field is intentionally blank, so none of the normal
+// validation/normalization below applies to it. Passed straight through so
+// the filing isn't silently dropped from the dataset. See
+// fetcher/senateFetcher.ts buildPaperPlaceholder.
+function normalizeScannedPlaceholder(raw: RawTransaction): Transaction {
+  return {
+    politician: raw.politician.trim(),
+    transaction_date: null,
+    filing_date: raw.filing_date.trim(),
+    ticker: null,
+    asset_name: null,
+    asset_type: null,
+    asset_subtype: null,
+    type: null,
+    amount_min: null,
+    amount_max: null,
+    owner: null,
+    source_id: raw.source_id,
+    content_hash: '',
+    filing_type: raw.filing_type,
+    amendment_number: raw.amendment_number,
+    parse_status: 'scanned_unparsed',
+    pdf_url: raw.pdf_url,
+    fetchedAt: '',
+    lastModifiedAt: '',
+    revisionCount: 0,
+  };
+}
+
 export function normalize(raw: RawTransaction): Transaction | null {
+  if (raw.parse_status === 'scanned_unparsed') return normalizeScannedPlaceholder(raw);
+
   const type = normalizeType(raw.type);
   const reason = skipReason(raw, type);
 
@@ -154,9 +265,10 @@ export function normalize(raw: RawTransaction): Transaction | null {
     politician: raw.politician.trim(),
     transaction_date: transaction_date ?? filing_date!,
     filing_date: filing_date ?? transaction_date!,
-    ticker: normalizeTicker(raw.ticker),
+    ticker: normalizeTicker(raw.ticker) ?? extractTickerFromAssetName(raw.asset_name),
     asset_name: raw.asset_name.trim(),
     asset_type: raw.asset_type.trim(),
+    asset_subtype: deriveAssetSubtype(raw.asset_type, raw.asset_name),
     type: type!,
     amount_min,
     amount_max,
@@ -165,7 +277,7 @@ export function normalize(raw: RawTransaction): Transaction | null {
     content_hash: '', // filled in by pipeline.ts alongside id, once amount_min/max etc. are final
     filing_type: raw.filing_type,
     amendment_number: raw.amendment_number,
-    parse_status: 'ok', // Senate has no scanned-PDF case — see types/index.ts
+    parse_status: 'ok',
     pdf_url: null,
     fetchedAt: '',      // filled in by pipeline.ts — first-seen or carried forward on revision
     lastModifiedAt: '', // filled in by pipeline.ts
@@ -178,6 +290,11 @@ export function normalizeAll(raws: RawTransaction[]): Transaction[] {
   let skipped = 0;
 
   for (const raw of raws) {
+    if (raw.parse_status === 'scanned_unparsed') {
+      results.push(normalizeScannedPlaceholder(raw));
+      continue;
+    }
+
     const type = normalizeType(raw.type);
     const reason = skipReason(raw, type);
 

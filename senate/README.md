@@ -41,21 +41,22 @@ One row per individual transaction reported in a Senate PTR:
 |---|---|---|
 | `id` | `string` | SHA-256 of `politician\|date\|asset\|amount\|source_id` — unique per row, changes if source_id changes |
 | `politician` | `string` | Filer name as it appears on the PTR |
-| `transaction_date` | `YYYY-MM-DD` | Trade execution date |
+| `transaction_date` | `YYYY-MM-DD \| null` | Trade execution date. `null` on a `scanned_unparsed` placeholder row — see `parse_status` |
 | `filing_date` | `YYYY-MM-DD` | Date the PTR was submitted |
-| `ticker` | `string \| null` | `null` for bonds, municipals, structured notes |
-| `asset_name` | `string` | Full asset description |
-| `asset_type` | `string` | `Stock`, `Stock Option`, `Mutual Fund`, `Corporate Bond`, etc. |
-| `type` | `'buy' \| 'sell' \| 'exchange'` | `Purchase` → `buy`; `Sale (Full)`/`Sale (Partial)` → `sell`; `Exchange` (asset swap, e.g. shares exchanged in a merger or spinoff) → `exchange` |
-| `amount_min` | `integer` | Lower bound of reported amount range, USD |
-| `amount_max` | `integer \| null` | Upper bound. `null` for unbounded "Over $X" disclosures |
-| `owner` | `'self' \| 'joint' \| 'spouse' \| 'child'` | Account owner per STOCK Act categories |
-| `source_id` | `string` | The source PTR's document id plus the row's ordinal within it (`<ptr_uuid>\|<row_index>`) — identifies exactly which document and which line produced this row |
+| `ticker` | `string \| null` | `null` for bonds, municipals, structured notes — also `null` on a `scanned_unparsed` placeholder row |
+| `asset_name` | `string \| null` | Full asset description. `null` on a `scanned_unparsed` placeholder row |
+| `asset_type` | `string \| null` | `Stock`, `Stock Option`, `Mutual Fund`, `Corporate Bond`, etc. — as labeled by the Senate EFD source. `null` on a `scanned_unparsed` placeholder row |
+| `asset_subtype` | `'ETF' \| 'Mutual Fund' \| null` | Derived from `asset_name`, only when `asset_type` is `Stock` — Senate's own asset-type checkboxes have no ETF/fund option, so filers commonly mark those as `Stock`. `null` for every other `asset_type` (e.g. `Other`, `Non-Public Stock`), where the source's own label is treated as more reliable than a name-text guess. Also `null` on a `scanned_unparsed` placeholder row |
+| `type` | `'buy' \| 'sell' \| 'exchange' \| null` | `Purchase` → `buy`; `Sale (Full)`/`Sale (Partial)` → `sell`; `Exchange` (asset swap, e.g. shares exchanged in a merger or spinoff) → `exchange`. `null` on a `scanned_unparsed` placeholder row |
+| `amount_min` | `integer \| null` | Lower bound of reported amount range, USD. `null` on a `scanned_unparsed` placeholder row |
+| `amount_max` | `integer \| null` | Upper bound. `null` for unbounded "Over $X" disclosures, and on a `scanned_unparsed` placeholder row |
+| `owner` | `'self' \| 'joint' \| 'spouse' \| 'child' \| null` | Account owner per STOCK Act categories. `null` on a `scanned_unparsed` placeholder row |
+| `source_id` | `string` | The source PTR's document id plus the row's ordinal within it (`<ptr_uuid>\|<row_index>`), or `<doc_id>\|paper` for a paper-filing placeholder — identifies exactly which document and which line produced this row |
 | `content_hash` | `string` | SHA-256 of `politician\|date\|asset\|type\|amount_min\|amount_max\|owner` — deliberately excludes `source_id`. See "Duplicate transactions across filings" below |
-| `filing_type` | `'original' \| 'amendment' \| null` | Read from the PTR's own "(Amendment N)" label. `null` only when the source page didn't expose a label — never guessed from duplication |
-| `amendment_number` | `integer \| null` | The N in "(Amendment N)". `null` for originals and for anything the source doesn't label |
-| `parse_status` | `'ok'` | Always `'ok'` here. The Senate source is an HTML table, not a PDF, so there's no scanned-filing case. Present for parity with the House actor, which emits `'scanned_unparsed'` placeholder rows |
-| `pdf_url` | `null` | Always `null` here — no per-row PDF on the Senate source |
+| `filing_type` | `'original' \| 'amendment' \| null` | Read from the PTR's own "(Amendment N)" label. `null` only when the source page didn't expose a label, or on a paper-filing placeholder — never guessed from duplication |
+| `amendment_number` | `integer \| null` | The N in "(Amendment N)". `null` for originals, for anything the source doesn't label, and for a paper-filing placeholder |
+| `parse_status` | `'ok' \| 'scanned_unparsed'` | `'ok'` for a normally-parsed electronic PTR row. `'scanned_unparsed'` means this filing was submitted **on paper** — Senate EFD serves it as a scanned image/PDF at `/search/view/paper/<id>/`, not the structured HTML table electronic PTRs get at `/search/view/ptr/<uuid>/`, and there's no OCR fallback. See "Paper filings" below |
+| `pdf_url` | `string \| null` | Populated only on a `scanned_unparsed` placeholder row — the paper filing's detail page (no per-row PDF exists; the whole filing is one scanned document). `null` on every normally-parsed row |
 | `fetchedAt` | `string` (ISO 8601 UTC) | When this row was first pulled from source. Immutable — never updated by a later re-fetch of the same, unchanged row. See "Fetch timestamps and immutable history" below |
 | `lastModifiedAt` | `string` (ISO 8601 UTC) | When this row's content last changed. Equal to `fetchedAt` until a revision is detected |
 | `revisionCount` | `integer` | How many times this source row's content has changed since it was first seen. `0` for a row that has never been revised |
@@ -63,6 +64,34 @@ One row per individual transaction reported in a Senate PTR:
 Same core schema as the House actor — records from both merge cleanly
 on field names and dedup semantics. `amendment_number` is Senate-only;
 the House source has no equivalent sequence number (see its README).
+
+### Paper filings
+
+Not every Senate PTR is filed electronically. Some are submitted on paper and
+served by Senate EFD as a scanned image/PDF at `/search/view/paper/<id>/` —
+a different link shape from an electronic PTR's `/search/view/ptr/<uuid>/`,
+visible in the listing itself before any detail page is fetched. There is no
+OCR fallback (same policy as the House actor's scanned PDFs), so a paper
+filing becomes a single placeholder row: `politician`, `filing_date`,
+`source_id`, and `pdf_url` (the filing's detail page) are populated;
+`transaction_date`, `ticker`, `asset_name`, `asset_type`, `asset_subtype`,
+`type`, `amount_min`, `amount_max`, and `owner` are all `null`, and
+`parse_status` is `'scanned_unparsed'`.
+
+**If you're filtering or aggregating this dataset, filter on
+`parse_status === 'ok'` first** — a paper-filing placeholder has no
+transaction data to analyze, and its null fields will otherwise show up as
+gaps in downstream stats (e.g. a null `amount_min` breaking a sum).
+
+Distinct from this: an electronic PTR (`/ptr/` link) whose detail page has
+zero table rows is **not** turned into a placeholder — that's a parser or
+Senate EFD layout break, not a known-unreadable filing, so it's just logged
+and counted (see `empty_ptr_count` below) rather than assumed to be paper.
+
+Every production run reports three counters — `electronic_ptr_count`,
+`paper_count`, `empty_ptr_count` — in the actor's log output and its
+`OUTPUT` record in the run's key-value store, so the electronic-vs-paper
+ratio for any given run can be read back without re-scraping the listing.
 
 ### Duplicate transactions across filings
 
@@ -171,7 +200,7 @@ Apify CLI:
 apify mcp install cursor --tools seralifatih/congress-trading-pipeline,seralifatih/congress-trading-pipeline-1
 ```
 
-On first connection you'll be asked to sign in to Apify. Runs are billed to your Apify account at the normal pay-per-result price.
+On first connection you'll be asked to sign in to Apify. Runs are billed to your Apify account at the normal pay-per-result price. On pay-per-event pricing, only a normally-parsed row is billed — a paper-filing `scanned_unparsed` placeholder is written to the dataset for free.
 
 ---
 
