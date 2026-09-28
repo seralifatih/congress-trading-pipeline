@@ -1,8 +1,15 @@
-import { Dataset } from 'apify';
+import { Actor, Dataset } from 'apify';
 import type { Transaction, QueryFilters, StoreAdapter } from '../types/index.js';
 import { makeLogger } from '../utils/logger.js';
 
 const log = makeLogger('apifyStore');
+
+// On pay-per-event pricing (configured on the Actor's Pricing tab in the
+// Apify console — no local pricing file needed), this is the event name that
+// tab must register. Actor.charge() is safe to call even when the Actor is
+// NOT on pay-per-event pricing — it logs a warning once and no-ops rather
+// than throwing — so this call is unconditional, not feature-detected.
+const TRANSACTION_CHARGE_EVENT = 'transaction';
 
 // ─── ApifyStore ───────────────────────────────────────────────────────────────
 // Writes transactions to the actor's default Dataset — persisted by Apify
@@ -25,7 +32,22 @@ export class ApifyStore implements StoreAdapter {
     if (transactions.length === 0) return;
     const dataset = await Dataset.open();
     await dataset.pushData(transactions);
-    log.info(`Pushed ${transactions.length} items to Apify Dataset`);
+
+    // Every row is written to the dataset either way — a placeholder
+    // ('scanned_unparsed' or 'parse_failed') is still real, useful output
+    // (it tells a consumer the filing exists and where to find the source
+    // PDF). But it carries no transaction data, so only a parse_status "ok"
+    // row is a billable result — the "=== 'ok'" allowlist naturally
+    // excludes both placeholder kinds, not just scanned ones.
+    const billable = transactions.filter((t) => t.parse_status === 'ok').length;
+    if (billable > 0) {
+      await Actor.charge({ eventName: TRANSACTION_CHARGE_EVENT, count: billable });
+    }
+
+    log.info(
+      `Pushed ${transactions.length} items to Apify Dataset ` +
+      `(${billable} billed as '${TRANSACTION_CHARGE_EVENT}', ${transactions.length - billable} free placeholder(s))`,
+    );
   }
 
   async query(filters: QueryFilters = {}): Promise<Transaction[]> {
