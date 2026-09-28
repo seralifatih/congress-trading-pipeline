@@ -15,6 +15,11 @@ dist/
 data/
 !lobbying-overlap/data/
 
+# Local Apify SDK run storage (datasets/key-value stores from `Actor.init()`
+# emulation during local dev/testing) — not source, never shared across runs
+senate/storage/
+house/storage/
+
 # Python (lobbying-overlap)
 __pycache__/
 *.pyc
