@@ -34,6 +34,16 @@ async function main(): Promise<void> {
     });
 
     log.info('Actor complete', stats);
+    if (stats.parseFailedCount > 0) {
+      log.warn(
+        `${stats.parseFailedCount} filing(s) produced a parse_failed placeholder this run — ` +
+        `markers found but no row matched TX_RE (a parser gap, not a scanned filing). See dataset rows with parse_status="parse_failed".`,
+      );
+    }
+    // Written to the run's default key-value store under 'OUTPUT' — the
+    // standard Apify convention, visible in the console without a separate
+    // lookup. Includes parseFailedCount so a parser gap surfaces in run
+    // stats instead of silently vanishing.
     await Actor.setValue('OUTPUT', stats);
   } catch (err) {
     log.error('Actor failed', { error: toErrorMessage(err) });

@@ -14,6 +14,10 @@ export interface PipelineStats {
   inserted: number;
   skipped: number;
   errors: number;
+  // Count of filings that produced a 'parse_failed' placeholder this run —
+  // see FetchResult in types/index.ts. Surfaced to Actor.setValue('OUTPUT',
+  // ...) so a parser gap shows up in run stats instead of vanishing silently.
+  parseFailedCount: number;
 }
 
 export interface PipelineOptions {
@@ -32,10 +36,14 @@ export async function runPipeline(
 
   // ── Step 1: Fetch House ZIP + per-PTR PDFs ──────────────────────────────────
   const fetchResult = await fetchAllHouse(fromDate, toDate);
+  const { parseFailedCount } = fetchResult;
+  if (parseFailedCount > 0) {
+    log.warn(`${parseFailedCount} filing(s) produced a parse_failed placeholder this run`);
+  }
 
   if (!fetchResult.success && fetchResult.records.length === 0) {
     log.error(`Fetch failed with no records: ${fetchResult.error}`);
-    return { inserted: 0, skipped: 0, errors: 1 };
+    return { inserted: 0, skipped: 0, errors: 1, parseFailedCount };
   }
 
   if (!fetchResult.success) {
@@ -52,7 +60,7 @@ export async function runPipeline(
 
   if (normalized.length === 0) {
     log.warn('No valid records after normalization — nothing to store');
-    return { inserted: 0, skipped, errors: 0 };
+    return { inserted: 0, skipped, errors: 0, parseFailedCount };
   }
 
   // ── Step 3: Load existing for dedup ─────────────────────────────────────────
@@ -68,7 +76,7 @@ export async function runPipeline(
   log.info(`Dedup: ${netNew.length} net-new (${normalized.length - netNew.length} already stored)`);
 
   if (netNew.length === 0) {
-    return { inserted: 0, skipped, errors: 0 };
+    return { inserted: 0, skipped, errors: 0, parseFailedCount };
   }
 
   // ── Step 5: Assign IDs, fetch/revision metadata, and save ───────────────────
@@ -136,5 +144,5 @@ export async function runPipeline(
     errors = 1;
   }
 
-  return { inserted: withIds.length, skipped, errors };
+  return { inserted: withIds.length, skipped, errors, parseFailedCount };
 }

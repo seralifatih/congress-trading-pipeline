@@ -43,7 +43,7 @@ after(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-test('/api/transactions leaves out scanned_unparsed placeholder rows', async () => {
+test('/api/transactions leaves out scanned_unparsed and parse_failed placeholder rows', async () => {
   await store.save([
     row({ id: 'ok-row' }),
     row({
@@ -61,8 +61,23 @@ test('/api/transactions leaves out scanned_unparsed placeholder rows', async () 
       filing_type: null,
       parse_status: 'scanned_unparsed',
     }),
+    row({
+      id: 'parse-failed-row',
+      source_id: 'house_3_parse_failed',
+      content_hash: 'h3',
+      transaction_date: null,
+      ticker: null,
+      asset_name: null,
+      asset_type: null,
+      type: null,
+      amount_min: null,
+      amount_max: null,
+      owner: null,
+      filing_type: null,
+      parse_status: 'parse_failed',
+    }),
   ]);
-  assert.equal(store.count(), 2, 'both rows are stored');
+  assert.equal(store.count(), 3, 'all three rows are stored');
 
   server = createApp().listen(0);
   const { port } = server.address();

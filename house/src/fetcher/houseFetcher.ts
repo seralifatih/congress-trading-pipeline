@@ -152,17 +152,18 @@ export async function fetchAllHouse(
   } catch (err) {
     const message = err instanceof AxiosError ? err.message : String(err);
     log.error(`House index fetch failed: ${message}`);
-    return { success: false, records: [], error: `House index: ${message}` };
+    return { success: false, records: [], error: `House index: ${message}`, parseFailedCount: 0 };
   }
 
   if (filings.length === 0) {
-    return { success: true, records: [] };
+    return { success: true, records: [], parseFailedCount: 0 };
   }
 
   // 2) Fetch each PDF, parse rows
   const records: RawTransaction[] = [];
   let errors = 0;
   let scanned = 0;
+  let parseFailed = 0;
 
   const debugLimit = process.env['DEBUG_PTR_LIMIT'] ? parseInt(process.env['DEBUG_PTR_LIMIT'], 10) : 0;
   const filingsToFetch = debugLimit > 0 ? filings.slice(0, debugLimit) : filings;
@@ -182,6 +183,7 @@ export async function fetchAllHouse(
         pdfUrl: ptrPdfUrl(f.year, f.docId),
       });
       if (parsed.some((r) => r.parse_status === 'scanned_unparsed')) scanned++;
+      if (parsed.some((r) => r.parse_status === 'parse_failed')) parseFailed++;
       records.push(...parsed);
     } catch (err) {
       errors++;
@@ -189,13 +191,17 @@ export async function fetchAllHouse(
     }
 
     if ((i + 1) % 25 === 0 || i === filingsToFetch.length - 1) {
-      log.info(`House progress: ${i + 1}/${filingsToFetch.length} PTRs → ${records.length} txs (${scanned} unparseable)`);
+      log.info(
+        `House progress: ${i + 1}/${filingsToFetch.length} PTRs → ${records.length} txs ` +
+        `(${scanned} scanned, ${parseFailed} parse_failed)`,
+      );
     }
     if (i < filingsToFetch.length - 1) await delay(PDF_DELAY_MS);
   }
 
   log.info(
-    `fetchAllHouse complete: ${filingsToFetch.length} filings → ${records.length} txs, ${scanned} unparseable, ${errors} errors`,
+    `fetchAllHouse complete: ${filingsToFetch.length} filings → ${records.length} txs, ` +
+    `${scanned} scanned_unparsed, ${parseFailed} parse_failed, ${errors} errors`,
   );
 
   const partial = errors > filingsToFetch.length / 4;
@@ -203,5 +209,6 @@ export async function fetchAllHouse(
     success: !partial,
     records,
     error: partial ? `${errors}/${filings.length} House PDF fetches failed` : undefined,
+    parseFailedCount: parseFailed,
   };
 }
