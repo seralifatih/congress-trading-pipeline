@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-09-28
+
+### Added
+- **`asset_subtype`** field (`'ETF' | 'Mutual Fund' | null`) on every row, both actors. House derives it directly from the source PDF's own asset-type marker code (`[ET]`/`[MF]`) — a direct source signal. Senate has no such source signal (its own asset-type checkboxes have no ETF/fund option), so it falls back to matching `asset_name` text (`ETF`, `Fund`) only when the source's own `asset_type` is `"Stock"` — never overriding a more specific non-"Stock" label like `"Other"`.
+- **Ticker fallback extraction**, both actors: when the structured `ticker` field is empty, extract it from `asset_name` text (`"Electronic Arts Inc. (EA)"`, `"EA - Electronic Arts Inc"`). A stoplist excludes entity suffixes and filing qualifiers (`LLC`, `Inc`, `Exchanged`, `Received`, etc.); deliberately no state-code blocklist, since several 2-letter postal codes are themselves live tickers (`MA` = Mastercard, `MS` = Morgan Stanley, `DE` = Deere). An exchange row's multiple parenthesized tickers resolve to the first (the asset being reported), not the received asset.
+- **`amendment_number`** field on House rows for schema parity with Senate — always `null` (House's source exposes only a New/Amended flag, no sequence number).
+- Senate: **paper-filing detection.** The listing's own link shape (`/search/view/paper/<id>/` vs `/search/view/ptr/<uuid>/`) now identifies a paper filing *before* fetching its detail page, and emits a `parse_status: "scanned_unparsed"` placeholder row instead of the filing silently vanishing (previously: the detail-page parser returned zero rows with only a log line, indistinguishable from a real error). A `/ptr/` link whose detail page still has zero table rows is tracked separately (`emptyPtrCount`) rather than assumed to be paper. Any listing link matching neither shape is counted and logged (`unknownDocTypeCount` + example URLs), surfaced in the run's `OUTPUT` key-value record.
+- House: **`parse_status: "parse_failed"`** — distinct from `scanned_unparsed`. Fires when a filing's PDF *does* have a text layer and transaction markers were found, but no row matched the parser's expected shape (a parser gap, not a known source-format limitation). Previously such a filing returned zero rows with no trace. Counted as `parseFailedCount`, surfaced in the run's `OUTPUT` record and logged as a warning when nonzero.
+- **Pay-per-event billing gate**, both actors: a placeholder row (`scanned_unparsed` or `parse_failed`) is still written to the dataset — it's real, useful output — but is never counted as a billable event on pay-per-event pricing. Only `parse_status: "ok"` rows are charged.
+
+### Fixed
+- **A single exact-dollar amount with cents was silently truncated to a whole dollar.** `stripAmount()` used `parseInt`, which stops at the first non-digit character (the decimal point) — `"$2,722.50"` became `2722`, not `2722.5`. Confirmed real-world case: House DocID 20034999, a Sale (Full) with no disclosure-bracket range, just an exact amount. Fixed to `parseFloat`; `amount_min`/`amount_max` are now `number` (not `int`) in both actors' schemas.
+- House: the same DocID 20034999 case also used to be silently dropped entirely, one layer up — `TX_RE` required a bracketed `"$X - $Y"` range and matched nothing against a single exact amount, so the row never reached `stripAmount` in the first place. `TX_RE` now accepts either shape. Re-running the 90-day unfiltered measurement after the fix: `ok` filings rose from 113 to 114 (133 total, 19 `scanned_unparsed`, 0 `parse_failed`).
+
+### Changed
+- Senate: `transaction_date`, `asset_name`, `asset_type`, `type`, `amount_min`, and `owner` are now nullable, matching House's placeholder-row shape (null only on a `scanned_unparsed` placeholder row).
+- Both actors bumped `0.4.x` → `0.5.0`.
+
 ## [1.3.1] - 2026-09-23
 
 ### Fixed
