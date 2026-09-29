@@ -14,6 +14,11 @@ dist/
 # Runtime data
 data/
 
+# Apify SDK local run storage (datasets/key-value stores/request queues
+# written by `apify run` or by tests that exercise the local Apify SDK
+# storage layer) — never real output, just local run/test artifacts
+storage/
+
 # Environment
 .env
 .env.local
