@@ -86,6 +86,23 @@ export function latestBySourceId(existing: Transaction[]): Map<string, Transacti
   return map;
 }
 
+// ─── Filing-level placeholder lookup ──────────────────────────────────────────
+// Keyed by filing_id (the doc id shared by every row/placeholder from one
+// filing), NOT source_id (which is per-row and therefore different for a
+// placeholder — one row per filing — versus real transaction rows — one row
+// per line item). This is what lets pipeline.ts's supersede step ask "does
+// this filing currently have a stale placeholder in storage?" regardless of
+// how many real rows it now produces.
+
+export function placeholdersByFilingId(existing: Transaction[]): Map<string, Transaction> {
+  const map = new Map<string, Transaction>();
+  for (const t of existing) {
+    if (t.parse_status === 'ok') continue;
+    map.set(t.filing_id, t);
+  }
+  return map;
+}
+
 // ─── Legacy helper (kept for store/interface.ts compatibility) ────────────────
 
 export function filterNewTrades(

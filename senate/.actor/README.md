@@ -63,27 +63,42 @@ One row per individual transaction reported in a Senate PTR:
 |---|---|---|
 | `id` | `string` | SHA-256 of `politician\|date\|asset\|amount\|source_id` — unique per row, changes if source_id changes |
 | `politician` | `string` | Filer name as it appears on the PTR |
-| `transaction_date` | `YYYY-MM-DD` | Trade execution date |
+| `transaction_date` | `YYYY-MM-DD \| null` | Trade execution date. `null` on any placeholder row (`fetch_failed`, `scanned_unparsed`, or `parse_failed`) — see `parse_status` |
 | `filing_date` | `YYYY-MM-DD` | Date the PTR was submitted |
-| `ticker` | `string \| null` | `null` for bonds, municipals, structured notes |
-| `asset_name` | `string` | Full asset description |
-| `asset_type` | `string` | `Stock`, `Stock Option`, `Mutual Fund`, `Corporate Bond`, etc. |
-| `type` | `'buy' \| 'sell' \| 'exchange'` | `Purchase` → `buy`; `Sale (Full)`/`Sale (Partial)` → `sell`; `Exchange` (asset swap, e.g. shares exchanged in a merger or spinoff) → `exchange` |
-| `amount_min` | `integer` | Lower bound of reported amount range, USD |
-| `amount_max` | `integer \| null` | Upper bound. `null` for unbounded "Over $X" disclosures |
-| `owner` | `'self' \| 'joint' \| 'spouse' \| 'child'` | Account owner per STOCK Act categories |
-| `source_id` | `string` | Source PTR's document id + row ordinal (`<ptr_uuid>\|<row_index>`) |
+| `ticker` | `string \| null` | `null` for bonds, municipals, structured notes — also `null` on any placeholder row |
+| `asset_name` | `string \| null` | Full asset description. `null` on any placeholder row |
+| `asset_type` | `string \| null` | `Stock`, `Stock Option`, `Mutual Fund`, `Corporate Bond`, etc. `null` on any placeholder row |
+| `type` | `'buy' \| 'sell' \| 'exchange' \| null` | `Purchase` → `buy`; `Sale (Full)`/`Sale (Partial)` → `sell`; `Exchange` (asset swap, e.g. shares exchanged in a merger or spinoff) → `exchange`. `null` on any placeholder row |
+| `amount_min` | `integer \| null` | Lower bound of reported amount range, USD. `null` on any placeholder row |
+| `amount_max` | `integer \| null` | Upper bound. `null` for unbounded "Over $X" disclosures, and on any placeholder row |
+| `owner` | `'self' \| 'joint' \| 'spouse' \| 'child' \| null` | Account owner per STOCK Act categories. `null` on any placeholder row |
+| `source_id` | `string` | Source PTR's document id + row ordinal (`<doc_id>\|<row_index>`), or `<doc_id>\|fetch_failed` / `<doc_id>\|paper` / `<doc_id>\|parse_failed` for the three placeholder kinds |
 | `content_hash` | `string` | SHA-256 of `politician\|date\|asset\|type\|amount_min\|amount_max\|owner` (source_id excluded) — see "Duplicate transactions across filings" below |
-| `filing_type` | `'original' \| 'amendment' \| null` | Read from the PTR's "(Amendment N)" label. `null` only when unlabeled — never guessed |
-| `amendment_number` | `integer \| null` | The N in "(Amendment N)"; `null` for originals |
-| `parse_status` | `'ok'` | Always `'ok'` here. The Senate source is an HTML table, not a PDF, so there's no scanned-filing case. Present for parity with the House actor, which emits `'scanned_unparsed'` placeholder rows |
-| `pdf_url` | `null` | Always `null` here — no per-row PDF on the Senate source |
+| `filing_type` | `'original' \| 'amendment' \| null` | Read from the PTR's "(Amendment N)" label. `null` only when unlabeled, or on a placeholder row — never guessed |
+| `amendment_number` | `integer \| null` | The N in "(Amendment N)"; `null` for originals and for a placeholder row |
+| `parse_status` | `'ok' \| 'fetch_failed' \| 'scanned_unparsed' \| 'parse_failed'` | `'ok'` for a normally-parsed electronic PTR row. `'fetch_failed'` means the detail-page fetch itself failed after retries — transient, superseded once a later run succeeds. `'scanned_unparsed'` means the filing was submitted on paper, no OCR fallback. `'parse_failed'` means the page fetched fine but had zero parseable rows — see "Coverage" below |
+| `pdf_url` | `string \| null` | Populated only on a placeholder row — the filing's detail page (no per-row PDF exists on this source). `null` on every normally-parsed row |
 | `fetchedAt` | `string` (ISO 8601 UTC) | When this row was first pulled from source. Immutable — never updated by a later re-fetch of the same, unchanged row |
 | `lastModifiedAt` | `string` (ISO 8601 UTC) | When this row's content last changed. Equal to `fetchedAt` until a revision is detected |
 | `revisionCount` | `integer` | How many times this source row's content has changed since it was first seen. `0` if never revised |
 
 Same core schema as the House actor — records from both merge cleanly
 on field names and dedup semantics. `amendment_number` is Senate-only.
+
+### Coverage
+
+**Every filing the Senate eFD listing returns shows up in the output — either as transaction rows or as an explicitly flagged placeholder. No filing is silently dropped.**
+
+| `parse_status` | Meaning | Billed? |
+|---|---|---|
+| `ok` | Normally parsed — a real transaction row | Yes |
+| `fetch_failed` | Detail-page fetch failed after retries — transient, superseded once a later run succeeds | No |
+| `scanned_unparsed` | Filing submitted on paper, no OCR fallback | No |
+| `parse_failed` | Page fetched fine but had zero parseable rows — a parser bug or layout change | No |
+
+**If you only want parsed transactions, filter `parse_status = "ok"`.**
+
+**Measured (last 30 days, September 2026):** 49 filings reported by the Senate eFD listing, all 49 accounted for in the output — 3 of them paper filings. `fetch_failed` and `parse_failed` are rare and non-steady-state. Every run reports `fetchFailedCount` in its `OUTPUT` record.
 
 ### Duplicate transactions across filings
 

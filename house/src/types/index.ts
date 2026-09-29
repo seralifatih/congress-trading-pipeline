@@ -14,23 +14,50 @@ export interface RawTransaction {
   amount: string;
   owner: string;
   source_id: string;
+  // The filing's own doc id (House DocID), shared by EVERY row and
+  // placeholder that came from this one filing — unlike source_id, which is
+  // per-transaction-row (house_${docId}_${rowIndex}) and therefore different
+  // for every row within the same filing. filing_id is what lets the
+  // pipeline recognize "a fetch_failed placeholder and a later successful
+  // parse are the SAME filing" and supersede the placeholder — see
+  // utils/dedup.ts latestByFilingId and scheduler/pipeline.ts's supersede
+  // step. Always equal to docId, never derived/hashed.
+  filing_id: string;
   // Sourced from the PTR's own per-row "Filing Status: New/Amended" comment
   // line — null when the source doesn't say. Never inferred from duplication.
   filing_type: 'original' | 'amendment' | null;
-  // 'ok' unless this row is a placeholder — see parseHousePtrText:
+  // 'ok' unless this row is a placeholder — see parseHousePtrText /
+  // houseFetcher.ts:
+  //   'fetch_failed'     — the PDF download itself failed after retries
+  //     (network error, timeout, non-2xx, or a buffer pdf-parse couldn't
+  //     read at all) — we never even got to look at the filing's content.
+  //     Distinct from 'parse_failed': this is a transient fetch-layer
+  //     failure, likely to succeed on a later run — see pipeline.ts's
+  //     supersede step, which replaces this placeholder with real rows (or
+  //     scanned_unparsed/parse_failed) once a fetch succeeds.
   //   'scanned_unparsed' — no [XX] markers found at all (scanned/paper PTR,
-  //     no text layer, no OCR fallback).
+  //     no text layer). Either no OCR template recognizes this filing's page
+  //     layout, or OCR was attempted and at least one row failed validation
+  //     — see ocr/index.ts: an OCR filing is all-or-nothing, never partial.
   //   'parse_failed'     — markers WERE found (so the PDF has a text layer
   //     and isn't a scanned filing) but no transaction row matched — an
   //     unrecognized amount/date/type-code shape TX_RE doesn't handle yet
   //     (e.g. DocID 20034999's single-exact-amount-with-cents format before
   //     it was fixed). Distinct from 'scanned_unparsed' because it signals a
   //     parser gap, not a known source-format limitation.
-  // A placeholder row (either kind) carries politician/filing_date/
-  // source_id/pdf_url only; every transaction-detail field below is
-  // empty/blank, normalize.ts passes it straight through unvalidated.
-  parse_status: 'ok' | 'scanned_unparsed' | 'parse_failed';
+  //   'ocr'              — recovered via OCR (see ocr/index.ts). Every row
+  //     in the filing passed validation; see ocr_confidence for this row's
+  //     score.
+  // A placeholder row ('fetch_failed', 'scanned_unparsed', or
+  // 'parse_failed') carries politician/filing_date/source_id/filing_id/
+  // pdf_url only; every transaction-detail field below is empty/blank,
+  // normalize.ts passes it straight through unvalidated. An 'ocr' row
+  // carries full transaction-detail fields, same shape as 'ok'.
+  parse_status: 'ok' | 'fetch_failed' | 'scanned_unparsed' | 'parse_failed' | 'ocr';
   pdf_url: string | null;
+  // Per-row OCR confidence (0-100, tesseract.js's mean word confidence for
+  // this row's crops), only set when parse_status === 'ocr'. Null otherwise.
+  ocr_confidence: number | null;
   raw_json: Record<string, unknown>;
 }
 
@@ -59,19 +86,36 @@ export const TransactionSchema = z.object({
   amount_max: z.number().nonnegative().nullable(),
   owner: z.enum(['self', 'joint', 'spouse', 'child']).nullable(),
   source_id: z.string().min(1),
+  // The filing's own doc id — see RawTransaction.filing_id above. Shared by
+  // every row/placeholder from the same filing; used by pipeline.ts to
+  // supersede a stale fetch_failed/scanned_unparsed/parse_failed placeholder
+  // once a later run successfully parses that same filing.
+  filing_id: z.string().min(1),
+  // 'fetch_failed': the PDF download itself failed after retries (network
+  // error, timeout, non-2xx, or an unreadable buffer) — content was never
+  // examined. Transient by nature: pipeline.ts supersedes this placeholder
+  // with real rows (or a scanned_unparsed/parse_failed placeholder) the
+  // moment a later run's fetch succeeds for the same filing_id.
   // 'scanned_unparsed': this filing's PDF has no extractable text layer (a
-  // scanned/paper PTR) and pdf-parse + the marker-anchored parser could not
-  // read it — no OCR fallback exists. 'parse_failed': the PDF DOES have a
-  // text layer and markers were found, but no row matched TX_RE — a parser
-  // gap (unrecognized amount/date/type-code shape), not a known
-  // source-format limitation. Both are placeholders: every
+  // scanned/paper PTR); either no OCR template recognizes this filing's page
+  // layout, or OCR was attempted and at least one row failed validation (see
+  // ocr/index.ts — an OCR filing is all-or-nothing, never partial).
+  // 'parse_failed': the PDF DOES have a text layer and markers were found,
+  // but no row matched TX_RE — a parser gap (unrecognized amount/date/
+  // type-code shape), not a known source-format limitation.
+  // 'fetch_failed'/'scanned_unparsed'/'parse_failed' are placeholders: every
   // transaction-detail field above is null, and pdf_url points at the source
   // PDF so a human (or a parser fix) can go look. 'ok' for every
-  // normally-parsed row, on both Senate and House.
-  parse_status: z.enum(['ok', 'scanned_unparsed', 'parse_failed']),
+  // normally-parsed row, on both Senate and House. 'ocr': recovered via OCR
+  // (House only) — carries full transaction-detail fields like 'ok', plus
+  // ocr_confidence below.
+  parse_status: z.enum(['ok', 'fetch_failed', 'scanned_unparsed', 'parse_failed', 'ocr']),
   // Source PDF URL. Populated on House rows (scanned or not); null on
   // Senate, which has no per-row PDF (its source is HTML).
   pdf_url: z.string().nullable().optional(),
+  // Per-row OCR confidence (0-100). Set only when parse_status === 'ocr';
+  // null for every other row (including on Senate, which never uses OCR).
+  ocr_confidence: z.number().min(0).max(100).nullable().optional(),
   // sha256 of politician|transaction_date|asset_name|type|amount_min|amount_max|owner
   // (source_id deliberately excluded) — see utils/dedup.ts computeContentHash.
   // Rows sharing a content_hash within the same source document are legitimate
@@ -113,11 +157,25 @@ export interface FetchResult {
   success: boolean;
   records: RawTransaction[];
   error?: string;
+  // Count of filings that produced a 'fetch_failed' placeholder this run —
+  // the PDF download failed after retries, so the filing's content was
+  // never even examined. See houseFetcher.ts's fetch catch block / types/
+  // index.ts parse_status. Surfaced so a transient network/host failure
+  // shows up in run stats instead of the filing silently vanishing.
+  fetchFailedCount: number;
   // Count of filings that produced a 'parse_failed' placeholder this run —
   // markers found (so not a scanned/paper PTR) but no row matched TX_RE.
   // Surfaced so a parser gap shows up in run stats instead of silently
   // vanishing. See parseHousePtrText / types/index.ts parse_status.
   parseFailedCount: number;
+  // Count of scanned filings whose page layout matched a known OCR template
+  // and produced parse_status "ocr" rows this run (every row in the filing
+  // passed validation — see ocr/index.ts). Does NOT count scanned filings
+  // that stayed "scanned_unparsed" (unrecognized template, or OCR attempted
+  // but a row failed validation).
+  ocrFilingCount: number;
+  // Total "ocr" rows produced this run, across all ocrFilingCount filings.
+  ocrRowCount: number;
 }
 
 // ─── Query filters for the store / API layer ─────────────────────────────────
@@ -129,7 +187,7 @@ export interface QueryFilters {
   date_to?: string;    // YYYY-MM-DD inclusive
   type?: 'buy' | 'sell' | 'exchange';
   owner?: 'self' | 'joint' | 'spouse' | 'child';
-  parse_status?: 'ok' | 'scanned_unparsed' | 'parse_failed';
+  parse_status?: 'ok' | 'fetch_failed' | 'scanned_unparsed' | 'parse_failed' | 'ocr';
   limit?: number;
   offset?: number;
 }
@@ -139,6 +197,16 @@ export interface QueryFilters {
 export interface StoreAdapter {
   save(transactions: Transaction[]): Promise<void>;
   query(filters?: QueryFilters): Promise<Transaction[]>;
+  // Removes stale placeholder rows for the given filing_ids — called by
+  // pipeline.ts's supersede step when a filing that previously produced a
+  // fetch_failed/scanned_unparsed/parse_failed placeholder is superseded by
+  // real (parse_status "ok"/"ocr") rows in this run. SqliteStore actually
+  // deletes (it's a rebuildable local cache); ApifyStore's underlying
+  // Dataset has no delete API, so it logs and no-ops — the old placeholder
+  // physically remains in the dataset, which is a real, documented
+  // limitation (see house/README.md Coverage section) rather than something
+  // silently swept under the rug.
+  deleteByFilingIds(filingIds: string[]): Promise<void>;
 }
 
 // ─── Pipeline internals (kept from scaffold) ──────────────────────────────────

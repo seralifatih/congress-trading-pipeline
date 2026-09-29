@@ -72,15 +72,34 @@ One row per individual transaction reported in a House PTR:
 | `amount_min` | `integer \| null` | Lower bound of reported amount range, USD. `null` on a placeholder row |
 | `amount_max` | `integer \| null` | Upper bound. `null` for unbounded "Over $X" disclosures, and on a placeholder row |
 | `owner` | `'self' \| 'joint' \| 'spouse' \| 'child' \| null` | Account owner per STOCK Act categories. `null` on a placeholder row |
-| `source_id` | `string` | Source PTR's DocID + row ordinal (`house_<DocID>_<row_index>`), `house_<DocID>_scanned` for a scanned placeholder, or `house_<DocID>_parse_failed` for a parse-failed placeholder |
+| `source_id` | `string` | Source PTR's DocID + row ordinal (`house_<DocID>_<row_index>`), or `house_<DocID>_fetch_failed` / `house_<DocID>_scanned` / `house_<DocID>_parse_failed` for the three placeholder kinds |
 | `content_hash` | `string` | SHA-256 of `politician\|date\|asset\|type\|amount_min\|amount_max\|owner` (source_id excluded) — see "Duplicate transactions across filings" below |
 | `filing_type` | `'original' \| 'amendment' \| null` | Read from the PTR's own per-row "Filing Status: New/Amended" line. `null` only when that line is missing or unrecognized — never guessed from duplication. No amendment-number equivalent exists in this source (unlike Senate) |
 | `amendment_number` | `integer \| null` | Always `null` on this actor — schema parity with the Senate actor's "(Amendment N)" label, which has no equivalent in this source |
-| `parse_status` | `'ok' \| 'scanned_unparsed' \| 'parse_failed'` | `'ok'` for a normally-parsed row. `'scanned_unparsed'` means this filing's PDF has no extractable text layer at all (scanned/paper PTR, no OCR fallback). `'parse_failed'` means the PDF DOES have a text layer and transaction markers were found, but no row matched the expected shape — a parser gap, not a known source-format limitation. See "Scanned, paper, and parse-failed filings" below |
+| `parse_status` | `'ok' \| 'fetch_failed' \| 'scanned_unparsed' \| 'parse_failed'` | `'ok'` for a normally-parsed row. `'fetch_failed'` means the PDF download itself failed after retries — a transient network/host issue, superseded automatically once a later run succeeds. `'scanned_unparsed'` means this filing's PDF has no extractable text layer at all (scanned/paper PTR, no OCR fallback). `'parse_failed'` means the PDF DOES have a text layer and transaction markers were found, but no row matched the expected shape — a parser gap, not a known source-format limitation. See "Coverage" and "Scanned, paper, and parse-failed filings" below |
 | `pdf_url` | `string` | The source House PTR PDF this row was parsed from (or, for a placeholder row, the PDF that couldn't be read/matched) |
 | `fetchedAt` | `string` (ISO 8601 UTC) | When this row was first pulled from source. Immutable — never updated by a later re-fetch of the same, unchanged row. See "Fetch timestamps and immutable history" below |
 | `lastModifiedAt` | `string` (ISO 8601 UTC) | When this row's content last changed. Equal to `fetchedAt` until a revision is detected |
 | `revisionCount` | `integer` | How many times this source row's content has changed since it was first seen. `0` if never revised |
+
+### Coverage
+
+**Every filing the House Clerk's index lists shows up in the output — either as transaction rows or as an explicitly flagged placeholder. No filing is silently dropped.**
+
+| `parse_status` | Meaning | Null fields | Billed? |
+|---|---|---|---|
+| `ok` | Normally parsed — a real transaction row | none | Yes |
+| `fetch_failed` | The PDF download itself failed after retries (network error, timeout, non-2xx). The filing's content was never examined. Transient — a later run that successfully fetches the same filing automatically replaces this placeholder with real rows | all transaction-detail fields | No |
+| `scanned_unparsed` | The PDF has no extractable text layer at all (a scanned/paper PTR). No OCR fallback | all transaction-detail fields | No |
+| `parse_failed` | The PDF has a text layer and transaction markers were found, but no row matched the expected shape — a parser gap, not a known source-format limitation | all transaction-detail fields | No |
+
+A placeholder row (`fetch_failed`, `scanned_unparsed`, or `parse_failed`) carries `politician`, `filing_date`, `source_id`, and `pdf_url`; every transaction-detail field (`transaction_date`, `ticker`, `asset_name`, `asset_type`, `asset_subtype`, `type`, `amount_min`, `amount_max`, `owner`) is `null`.
+
+**If you only want parsed transactions, filter `parse_status = "ok"`.**
+
+**Measured (last 90 days, September 2026):** 133 of 133 PTR filings reported by the House index are accounted for in the output — 133 in, 133 (or their placeholders) out. Roughly 14% (~19 filings) are scanned paper PTRs (`scanned_unparsed`). `fetch_failed` and `parse_failed` are expected to be rare and transient/one-off respectively, not steady-state percentages — every pipeline run logs and reports `fetchFailedCount` / `parseFailedCount` in its `OUTPUT` key-value record so a spike or a new parser gap doesn't go unnoticed.
+
+**Revision tracking:** `fetchedAt`, `lastModifiedAt`, and `revisionCount` — including for placeholders — let you tell "we don't have this yet" (a fresh `fetch_failed` placeholder) apart from "we've retried and it's still failing" (a `fetch_failed` placeholder with `revisionCount > 0`). See "Fetch timestamps and immutable history" below.
 
 ### Scanned, paper, and parse-failed filings
 
@@ -102,14 +121,23 @@ signals a parser gap, not a known source-format limitation, and gets
 the same placeholder treatment: same fields populated, same fields
 null, `parse_status = "parse_failed"`.
 
-Filter both out with `parse_status = "ok"`, or use `pdf_url` to go
+A third placeholder, `"fetch_failed"`, covers a different layer
+entirely: the PDF download itself failed after retries (network error,
+timeout, non-2xx response), so the filing's content was never even
+examined. Unlike the other two, this one is transient — the next
+pipeline run that successfully fetches the same filing automatically
+supersedes the placeholder with real rows (see "Coverage" above).
+
+Filter all three out with `parse_status = "ok"`, or use `pdf_url` to go
 read the filing yourself. In a recent 90-day sample (133 filings),
-roughly 14% hit `scanned_unparsed`; `parse_failed` is expected to be
-rare (it fires only when a real filing exposes a parser gap) — each
-occurrence is a signal to add a fixture and extend the parser, not a
-steady-state percentage like the scanned rate. Every pipeline run logs
-and reports a `parseFailedCount` (see the run's `OUTPUT` key-value
-record) so a new gap doesn't go unnoticed.
+roughly 14% hit `scanned_unparsed`; `fetch_failed` and `parse_failed`
+are expected to be rare (the former fires on transient network/host
+issues, the latter only when a real filing exposes a parser gap) — each
+`parse_failed` occurrence is a signal to add a fixture and extend the
+parser, not a steady-state percentage like the scanned rate. Every
+pipeline run logs and reports `fetchFailedCount` and `parseFailedCount`
+(see the run's `OUTPUT` key-value record) so a spike or a new gap
+doesn't go unnoticed.
 
 ### Duplicate transactions across filings
 
@@ -182,7 +210,7 @@ Apify CLI:
 apify mcp install cursor --tools seralifatih/congress-trading-pipeline,seralifatih/congress-trading-pipeline-1
 ```
 
-On first connection you'll be asked to sign in to Apify. Runs are billed to your Apify account at the normal pay-per-result price. On pay-per-event pricing, only a normally-parsed row is billed — a `scanned_unparsed` or `parse_failed` placeholder is written to the dataset for free.
+On first connection you'll be asked to sign in to Apify. Runs are billed to your Apify account at the normal pay-per-result price. On pay-per-event pricing, only a normally-parsed row is billed — a `fetch_failed`, `scanned_unparsed`, or `parse_failed` placeholder is written to the dataset for free.
 
 ---
 
@@ -216,7 +244,7 @@ On first connection you'll be asked to sign in to Apify. Runs are billed to your
 
 **6. Normalize + dedup + push.** Map source codes (`P`/`S`/`S (partial)`, `SP`/`DC`/`JT`) to the canonical schema, hash the natural key (including `source_id`) for a stable per-row `id`, push to the default Apify dataset. A separate `content_hash` (source_id excluded) lets you spot the same real-world trade reported across two different PTR documents — see "Duplicate transactions across filings" above. A same-`source_id` row with a changed `content_hash` is logged as a revision and its `revisionCount`/`lastModifiedAt` updated — see "Fetch timestamps and immutable history" above.
 
-Older filings filed on paper produce scanned-image PDFs that `pdf-parse` can't extract from. There is no OCR fallback, so the parser emits a `parse_status: "scanned_unparsed"` placeholder row for that filing instead of dropping it — see "Scanned, paper, and parse-failed filings" above. In a recent 90-day sample (133 filings), roughly 14% hit this path. OCR fallback is on the Phase 2 list. A filing whose markers were found but whose row shape the parser doesn't recognize gets a separate `parse_status: "parse_failed"` placeholder instead — same section above.
+Older filings filed on paper produce scanned-image PDFs that `pdf-parse` can't extract from. There is no OCR fallback, so the parser emits a `parse_status: "scanned_unparsed"` placeholder row for that filing instead of dropping it — see "Coverage" and "Scanned, paper, and parse-failed filings" above. In a recent 90-day sample (133 filings), roughly 14% hit this path. OCR fallback is on the Phase 2 list. A filing whose markers were found but whose row shape the parser doesn't recognize gets a separate `parse_status: "parse_failed"` placeholder instead, and a filing whose PDF download itself fails after retries gets a `parse_status: "fetch_failed"` placeholder that a later successful run automatically supersedes — same sections above.
 
 ---
 

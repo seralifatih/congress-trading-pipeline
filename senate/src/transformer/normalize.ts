@@ -213,14 +213,28 @@ function skipReason(raw: RawTransaction, type: 'buy' | 'sell' | 'exchange' | nul
 
 // ─── Main export ──────────────────────────────────────────────────────────────
 
-// A 'scanned_unparsed' row is a placeholder for a filing submitted on paper
-// (Senate EFD serves it as a scanned image/PDF at /search/view/paper/<id>/,
-// not the structured HTML table electronic PTRs get) — every
+// A 'fetch_failed', 'scanned_unparsed', or 'parse_failed' row is a
+// placeholder for a filing that produced no transaction-detail data —
+// respectively: the PTR detail-page fetch itself failed (senateFetcher.ts),
+// the filing was submitted on paper (Senate EFD serves it as a scanned
+// image/PDF at /search/view/paper/<id>/, not the structured HTML table
+// electronic PTRs get), or the /ptr/<uuid>/ page fetched fine but had zero
+// parseable table rows (a parser bug or Senate EFD layout change) — every
 // transaction-detail field is intentionally blank, so none of the normal
 // validation/normalization below applies to it. Passed straight through so
 // the filing isn't silently dropped from the dataset. See
-// fetcher/senateFetcher.ts buildPaperPlaceholder.
-function normalizeScannedPlaceholder(raw: RawTransaction): Transaction {
+// fetcher/senateFetcher.ts buildPaperPlaceholder / buildFetchFailedPlaceholder
+// / buildParseFailedPlaceholder.
+const PLACEHOLDER_STATUSES = new Set(['fetch_failed', 'scanned_unparsed', 'parse_failed']);
+
+function isPlaceholderStatus(status: string): status is 'fetch_failed' | 'scanned_unparsed' | 'parse_failed' {
+  return PLACEHOLDER_STATUSES.has(status);
+}
+
+function normalizePlaceholder(
+  raw: RawTransaction,
+  parse_status: 'fetch_failed' | 'scanned_unparsed' | 'parse_failed',
+): Transaction {
   return {
     politician: raw.politician.trim(),
     transaction_date: null,
@@ -234,10 +248,11 @@ function normalizeScannedPlaceholder(raw: RawTransaction): Transaction {
     amount_max: null,
     owner: null,
     source_id: raw.source_id,
+    filing_id: raw.filing_id,
     content_hash: '',
     filing_type: raw.filing_type,
     amendment_number: raw.amendment_number,
-    parse_status: 'scanned_unparsed',
+    parse_status,
     pdf_url: raw.pdf_url,
     fetchedAt: '',
     lastModifiedAt: '',
@@ -246,7 +261,7 @@ function normalizeScannedPlaceholder(raw: RawTransaction): Transaction {
 }
 
 export function normalize(raw: RawTransaction): Transaction | null {
-  if (raw.parse_status === 'scanned_unparsed') return normalizeScannedPlaceholder(raw);
+  if (isPlaceholderStatus(raw.parse_status)) return normalizePlaceholder(raw, raw.parse_status);
 
   const type = normalizeType(raw.type);
   const reason = skipReason(raw, type);
@@ -274,6 +289,7 @@ export function normalize(raw: RawTransaction): Transaction | null {
     amount_max,
     owner: normalizeOwner(raw.owner),
     source_id: raw.source_id,
+    filing_id: raw.filing_id,
     content_hash: '', // filled in by pipeline.ts alongside id, once amount_min/max etc. are final
     filing_type: raw.filing_type,
     amendment_number: raw.amendment_number,
@@ -290,8 +306,8 @@ export function normalizeAll(raws: RawTransaction[]): Transaction[] {
   let skipped = 0;
 
   for (const raw of raws) {
-    if (raw.parse_status === 'scanned_unparsed') {
-      results.push(normalizeScannedPlaceholder(raw));
+    if (isPlaceholderStatus(raw.parse_status)) {
+      results.push(normalizePlaceholder(raw, raw.parse_status));
       continue;
     }
 

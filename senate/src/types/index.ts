@@ -14,16 +14,41 @@ export interface RawTransaction {
   amount: string;
   owner: string;
   source_id: string;
+  // The filing's own doc id (the /ptr/<uuid> or /paper/<id> segment of its
+  // Senate EFD listing link), shared by EVERY row and placeholder that came
+  // from this one filing — unlike source_id, which is per-transaction-row
+  // (${doc_id}|${rowIndex}) and therefore different for every row within the
+  // same filing. filing_id is what lets the pipeline recognize "a
+  // fetch_failed placeholder and a later successful parse are the SAME
+  // filing" and supersede the placeholder — see utils/dedup.ts
+  // latestByFilingId and scheduler/pipeline.ts's supersede step. Always
+  // equal to doc_id, never derived/hashed.
+  filing_id: string;
   // Sourced from the filing's own label — null when the source doesn't say.
   // Never inferred from duplicate documents/rows.
   filing_type: 'original' | 'amendment' | null;
   amendment_number: number | null;
-  // 'ok' unless this row is a placeholder for a filing submitted on paper
-  // (Senate EFD serves it as a scanned image/PDF, not the structured HTML
-  // table electronic PTRs get) — see fetcher/senateFetcher.ts
-  // buildPaperPlaceholder. A placeholder row carries politician/filing_date/
-  // source_id/pdf_url only; every transaction-detail field below is blank.
-  parse_status: 'ok' | 'scanned_unparsed';
+  // 'ok' unless this row is a placeholder — see fetcher/senateFetcher.ts:
+  //   'fetch_failed'     — the PTR detail-page fetch itself failed after
+  //     retries (network error, timeout, non-2xx, or a home-page redirect
+  //     that re-handshake couldn't resolve) — we never even got to look at
+  //     this filing's content. Distinct from 'parse_failed': this is a
+  //     transient fetch-layer failure, likely to succeed on a later run —
+  //     see pipeline.ts's supersede step, which replaces this placeholder
+  //     with real rows once a fetch succeeds.
+  //   'scanned_unparsed' — this filing was submitted on paper (Senate EFD
+  //     serves it at /search/view/paper/<id>/, a scanned image/PDF viewer,
+  //     not the structured HTML table electronic PTRs get) — there is no
+  //     OCR fallback for Senate, so this is permanent, not transient.
+  //   'parse_failed'     — the /ptr/<uuid>/ detail page fetched
+  //     successfully (so this is NOT a paper filing) but had zero
+  //     parseable table rows — a parser bug or a Senate EFD layout change,
+  //     not a known source-format limitation. See parsePtrTransactions's
+  //     isEmpty.
+  // A placeholder row ('fetch_failed', 'scanned_unparsed', or
+  // 'parse_failed') carries politician/filing_date/source_id/filing_id/
+  // pdf_url only; every transaction-detail field below is blank.
+  parse_status: 'ok' | 'fetch_failed' | 'scanned_unparsed' | 'parse_failed';
   pdf_url: string | null;
   raw_json: Record<string, unknown>;
 }
@@ -55,6 +80,11 @@ export const TransactionSchema = z.object({
   amount_max: z.number().nonnegative().nullable(),
   owner: z.enum(['self', 'joint', 'spouse', 'child']).nullable(),
   source_id: z.string().min(1),
+  // The filing's own doc id — see RawTransaction.filing_id above. Shared by
+  // every row/placeholder from the same filing; used by pipeline.ts to
+  // supersede a stale fetch_failed/scanned_unparsed/parse_failed placeholder
+  // once a later run successfully parses that same filing.
+  filing_id: z.string().min(1),
   // sha256 of politician|transaction_date|asset_name|type|amount_min|amount_max|owner
   // (source_id deliberately excluded) — see utils/dedup.ts computeContentHash.
   // Rows sharing a content_hash within the same source document are legitimate
@@ -68,14 +98,22 @@ export const TransactionSchema = z.object({
   filing_type: z.enum(['original', 'amendment']).nullable(),
   // Senate only: the N in "(Amendment N)". No equivalent exists on House.
   amendment_number: z.number().int().positive().nullable().optional(),
+  // 'fetch_failed': the PTR detail-page fetch itself failed after retries —
+  // content was never examined. Transient: pipeline.ts supersedes this
+  // placeholder with real rows the moment a later run's fetch succeeds for
+  // the same filing_id.
   // 'scanned_unparsed': this filing was submitted on paper (Senate EFD serves
   // it at /search/view/paper/<id>/, a scanned image/PDF viewer, not the
   // structured HTML table electronic PTRs get at /search/view/ptr/<uuid>/) —
   // there is no OCR fallback, so the row is a placeholder: every
   // transaction-detail field below is null, and pdf_url points at the
-  // filing's detail page so a human can go look. 'ok' for every normally-
-  // parsed row. See fetcher/senateFetcher.ts buildPaperPlaceholder.
-  parse_status: z.enum(['ok', 'scanned_unparsed']).default('ok'),
+  // filing's detail page so a human can go look.
+  // 'parse_failed': the /ptr/<uuid>/ page fetched fine (not a paper filing)
+  // but had zero parseable table rows — a parser bug or a Senate EFD layout
+  // change. See fetcher/senateFetcher.ts parsePtrTransactions's isEmpty.
+  // 'ok' for every normally-parsed row. See fetcher/senateFetcher.ts
+  // buildPaperPlaceholder / buildFetchFailedPlaceholder / buildParseFailedPlaceholder.
+  parse_status: z.enum(['ok', 'fetch_failed', 'scanned_unparsed', 'parse_failed']).default('ok'),
   // Populated only on a 'scanned_unparsed' placeholder row, where it points
   // at the paper filing's detail page (no per-row PDF exists — the whole
   // filing is one scanned document). Null on every normally-parsed row —
@@ -112,8 +150,11 @@ export interface FetchResult {
   //   electronicPtrCount   — /search/view/ptr/<uuid>/ (structured HTML table)
   //   paperCount           — /search/view/paper/<id>/ (scanned image/PDF)
   //   emptyPtrCount        — a /ptr/ link whose detail page had zero table
-  //                          rows (parser/layout break, not a paper filing —
-  //                          never turned into a placeholder, just counted)
+  //                          rows — a parser/layout break, not a paper
+  //                          filing. Now DOES produce a 'parse_failed'
+  //                          placeholder (see parsePtrTransactions's
+  //                          isEmpty) — this counter is purely diagnostic,
+  //                          kept alongside fetchFailedCount for symmetry.
   //   unknownDocTypeCount  — a listing row whose link matched NEITHER /ptr/
   //                          nor /paper/ (a new/changed Senate EFD link shape
   //                          this code doesn't recognize yet). Never silently
@@ -121,11 +162,17 @@ export interface FetchResult {
   //                          counted here so a production run surfaces it.
   //   unknownDocTypeExamples — up to 5 example URLs from unknownDocTypeCount,
   //                            for diagnosing what the new shape looks like.
+  //   fetchFailedCount     — a /ptr/ detail-page fetch that failed after
+  //                          retries. Produces a 'fetch_failed' placeholder
+  //                          (see buildFetchFailedPlaceholder) — transient,
+  //                          superseded by pipeline.ts once a later run's
+  //                          fetch succeeds for the same filing_id.
   electronicPtrCount: number;
   paperCount: number;
   emptyPtrCount: number;
   unknownDocTypeCount: number;
   unknownDocTypeExamples: string[];
+  fetchFailedCount: number;
 }
 
 // ─── Query filters for the store / API layer ─────────────────────────────────
@@ -137,7 +184,7 @@ export interface QueryFilters {
   date_to?: string;    // YYYY-MM-DD inclusive
   type?: 'buy' | 'sell' | 'exchange';
   owner?: 'self' | 'joint' | 'spouse' | 'child';
-  parse_status?: 'ok' | 'scanned_unparsed';
+  parse_status?: 'ok' | 'fetch_failed' | 'scanned_unparsed' | 'parse_failed';
   limit?: number;
   offset?: number;
 }
@@ -147,6 +194,15 @@ export interface QueryFilters {
 export interface StoreAdapter {
   save(transactions: Transaction[]): Promise<void>;
   query(filters?: QueryFilters): Promise<Transaction[]>;
+  // Removes stale placeholder rows for the given filing_ids — called by
+  // pipeline.ts's supersede step when a filing that previously produced a
+  // fetch_failed/scanned_unparsed/parse_failed placeholder is superseded by
+  // real (parse_status "ok") rows in this run. SqliteStore actually deletes
+  // (it's a rebuildable local cache); ApifyStore's underlying Dataset has no
+  // delete API, so it logs and no-ops — the old placeholder physically
+  // remains in the dataset, a real, documented limitation (see
+  // senate/README.md Coverage section).
+  deleteByFilingIds(filingIds: string[]): Promise<void>;
 }
 
 // ─── Pipeline internals (kept from scaffold) ──────────────────────────────────

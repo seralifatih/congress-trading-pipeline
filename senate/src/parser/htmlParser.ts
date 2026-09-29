@@ -169,6 +169,14 @@ export function parseHtml(html: string): RawTransaction[] {
       amount: cell(cells, cols.amount, $),
       owner: cell(cells, cols.owner, $),
       source_id: sourceId,
+      // No per-filing doc_id is recoverable from this legacy fallback path
+      // (it parses a bare transaction table, not a filing-listing page with
+      // a doc id) — source_id and filing_id collapse to the same synthetic
+      // value here. This means supersede-by-filing_id (see utils/dedup.ts
+      // placeholdersByFilingId) is a no-op for rows from this path, which is
+      // fine: this fallback only ever produces parse_status "ok" rows, never
+      // placeholders, so there is nothing to supersede.
+      filing_id: sourceId,
       // This fallback parses a transaction table, not the filing-listing page
       // that carries the "(Amendment N)" label — genuinely unavailable here.
       filing_type: null,

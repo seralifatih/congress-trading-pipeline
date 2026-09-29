@@ -13,6 +13,7 @@
       "owner",
       "id",
       "source_id",
+      "filing_id",
       "content_hash",
       "parse_status",
       "fetchedAt",
@@ -29,8 +30,14 @@
       "source_id": {
         "type": "string",
         "title": "Source document ID",
-        "description": "The source PTR's DocID plus the row's ordinal within it (house_<DocID>_<row_index>). Identifies exactly which document and line produced this row.",
+        "description": "The source PTR's DocID plus the row's ordinal within it (house_<DocID>_<row_index>), or house_<DocID>_fetch_failed / house_<DocID>_scanned / house_<DocID>_parse_failed for the three placeholder kinds.",
         "example": "house_20034201_0"
+      },
+      "filing_id": {
+        "type": "string",
+        "title": "Filing ID",
+        "description": "The filing's own DocID, shared by every row and placeholder from this one filing — unlike source_id, which is per-row and therefore different for a placeholder (one row per filing) versus real transaction rows (one row per line item). Used to recognize when a later run's real rows supersede a stale placeholder for the same filing.",
+        "example": "20034201"
       },
       "content_hash": {
         "type": "string",
@@ -54,14 +61,14 @@
       "parse_status": {
         "type": "string",
         "title": "Parse status",
-        "description": "'ok' for a normally-parsed row. 'scanned_unparsed' means this filing's PDF has no extractable text layer at all (a scanned/paper PTR) — there is no OCR fallback. 'parse_failed' means the PDF DOES have a text layer and transaction markers were found, but no row matched the expected amount/date/type-code shape — a parser gap, not a known source-format limitation. Both are placeholders: every transaction-detail field (transaction_date, ticker, asset_name, asset_type, asset_subtype, type, amount_min, amount_max, owner) is null, and pdf_url points at the source PDF.",
-        "enum": ["ok", "scanned_unparsed", "parse_failed"],
+        "description": "'ok' for a normally-parsed row. 'fetch_failed' means the PDF download itself failed after retries — the filing's content was never examined; transient, superseded automatically once a later run's fetch succeeds for the same filing. 'scanned_unparsed' means this filing's PDF has no extractable text layer at all (a scanned/paper PTR) — no OCR template recognized it, or OCR was attempted and a row failed validation. 'parse_failed' means the PDF DOES have a text layer and transaction markers were found, but no row matched the expected amount/date/type-code shape — a parser gap. 'ocr' means the filing was recovered via OCR (see ocr_confidence) — every row in the filing passed validation. Every non-'ok'/'ocr' status is a placeholder: every transaction-detail field (transaction_date, ticker, asset_name, asset_type, asset_subtype, type, amount_min, amount_max, owner) is null, and pdf_url points at the source PDF. No filing is ever silently dropped from output.",
+        "enum": ["ok", "fetch_failed", "scanned_unparsed", "parse_failed", "ocr"],
         "example": "ok"
       },
       "pdf_url": {
         "type": ["string", "null"],
         "title": "Source PDF URL",
-        "description": "URL of the House PTR PDF this row was parsed from (or, for a 'scanned_unparsed'/'parse_failed' row, the PDF that couldn't be read/matched).",
+        "description": "URL of the House PTR PDF this row was parsed from (or, for a placeholder row, the PDF that couldn't be fetched/read/matched).",
         "example": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/20034201.pdf"
       },
       "fetchedAt": {
@@ -222,6 +229,7 @@
           "amount_max",
           "owner",
           "source_id",
+          "filing_id",
           "content_hash",
           "filing_type",
           "amendment_number",

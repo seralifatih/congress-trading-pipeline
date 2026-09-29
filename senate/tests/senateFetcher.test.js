@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const {
   rowToFilingMeta,
   buildPaperPlaceholder,
+  buildFetchFailedPlaceholder,
   parsePtrTransactions,
   collectFilings,
 } = require('../dist/fetcher/senateFetcher.js');
@@ -111,6 +112,24 @@ test('buildPaperPlaceholder produces a scanned_unparsed row with politician/fili
   assert.equal(raw.ticker, '');
 });
 
+// ─── Detail-page fetch failure → placeholder row, not a silent drop ───────────
+
+test('buildFetchFailedPlaceholder produces a fetch_failed row with the error message preserved', () => {
+  const meta = rowToFilingMeta(ptrRow());
+  const raw = buildFetchFailedPlaceholder(meta, 'Timeout after 20000ms');
+
+  assert.equal(raw.parse_status, 'fetch_failed');
+  assert.equal(raw.politician, 'Jane Doe');
+  assert.equal(raw.filing_id, 'abc12345-e1b2-411d-b562-8fe4c2a4f2a1');
+  assert.equal(raw.source_id, 'abc12345-e1b2-411d-b562-8fe4c2a4f2a1|fetch_failed');
+  assert.equal(raw.pdf_url, 'https://efdsearch.senate.gov/search/view/ptr/abc12345-e1b2-411d-b562-8fe4c2a4f2a1/');
+  assert.equal(raw.raw_json.fetch_error, 'Timeout after 20000ms');
+  // Every transaction-detail field blank, same shape as the other placeholders
+  assert.equal(raw.transaction_date, '');
+  assert.equal(raw.asset_name, '');
+  assert.equal(raw.ticker, '');
+});
+
 test('normalize() turns a paper placeholder into a Transaction with all detail fields null', () => {
   const meta = rowToFilingMeta(paperRow());
   const raw = buildPaperPlaceholder(meta);
@@ -132,14 +151,30 @@ test('normalize() turns a paper placeholder into a Transaction with all detail f
   assert.equal(result.ticker, null);
 });
 
-// ─── /ptr/ link with zero table rows → no placeholder, counted separately ─────
+// ─── /ptr/ link with zero table rows → parse_failed placeholder, not silently dropped ──
+// Previously this returned an empty records array (only isEmpty counted it) —
+// a real filing enumerated in the listing that vanished from output with no
+// trace. Now it emits a 'parse_failed' placeholder (mirrors House's
+// housePdfParser.ts parse_failed) so the filing stays visible — see
+// buildParseFailedPlaceholder. isEmpty is kept as a diagnostic counter only.
 
-test('parsePtrTransactions on an empty-table /ptr/ page returns no records and isEmpty=true', () => {
+test('parsePtrTransactions on an empty-table /ptr/ page emits a parse_failed placeholder, not a silent drop', () => {
   const meta = rowToFilingMeta(ptrRow());
   const result = parsePtrTransactions(EMPTY_HTML, meta);
 
-  assert.deepEqual(result.records, []);
   assert.equal(result.isEmpty, true);
+  assert.equal(result.records.length, 1, 'the empty page must still produce exactly one placeholder row');
+
+  const placeholder = result.records[0];
+  assert.equal(placeholder.parse_status, 'parse_failed');
+  assert.equal(placeholder.politician, 'Jane Doe');
+  assert.equal(placeholder.filing_id, 'abc12345-e1b2-411d-b562-8fe4c2a4f2a1');
+  assert.equal(placeholder.source_id, 'abc12345-e1b2-411d-b562-8fe4c2a4f2a1|parse_failed');
+  assert.equal(placeholder.pdf_url, 'https://efdsearch.senate.gov/search/view/ptr/abc12345-e1b2-411d-b562-8fe4c2a4f2a1/');
+  // Every transaction-detail field blank, same shape as the paper placeholder
+  assert.equal(placeholder.transaction_date, '');
+  assert.equal(placeholder.asset_name, '');
+  assert.equal(placeholder.ticker, '');
 });
 
 // ─── Normal /ptr/ page with real rows → existing behavior preserved ──────────

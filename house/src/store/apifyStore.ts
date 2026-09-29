@@ -36,10 +36,12 @@ export class ApifyStore implements StoreAdapter {
     // Every row is written to the dataset either way — a placeholder
     // ('scanned_unparsed' or 'parse_failed') is still real, useful output
     // (it tells a consumer the filing exists and where to find the source
-    // PDF). But it carries no transaction data, so only a parse_status "ok"
-    // row is a billable result — the "=== 'ok'" allowlist naturally
-    // excludes both placeholder kinds, not just scanned ones.
-    const billable = transactions.filter((t) => t.parse_status === 'ok').length;
+    // PDF). But it carries no transaction data, so only "ok" and "ocr" rows
+    // are billable results — an 'ocr' row is validated, complete transaction
+    // data (see ocr/index.ts's all-or-nothing policy: an OCR filing either
+    // fully validates or stays scanned_unparsed, never partial), so it's
+    // billed the same as a normally-parsed row.
+    const billable = transactions.filter((t) => t.parse_status === 'ok' || t.parse_status === 'ocr').length;
     if (billable > 0) {
       await Actor.charge({ eventName: TRANSACTION_CHARGE_EVENT, count: billable });
     }
@@ -47,6 +49,24 @@ export class ApifyStore implements StoreAdapter {
     log.info(
       `Pushed ${transactions.length} items to Apify Dataset ` +
       `(${billable} billed as '${TRANSACTION_CHARGE_EVENT}', ${transactions.length - billable} free placeholder(s))`,
+    );
+  }
+
+  // Apify Dataset has no delete API (append-only, pushData-only) — a stale
+  // placeholder written on a prior run physically stays in the dataset
+  // forever. This is a real, documented platform limitation (see
+  // house/README.md Coverage section), not something worked around here.
+  // The pipeline still calls this on every run (same as SqliteStore) so the
+  // supersede logic is uniform across both stores; here it just logs so the
+  // gap is visible in run output rather than silently doing nothing.
+  async deleteByFilingIds(filingIds: string[]): Promise<void> {
+    if (filingIds.length === 0) return;
+    log.warn(
+      `deleteByFilingIds: Apify Dataset has no delete API — ${filingIds.length} stale ` +
+      `placeholder row(s) for filing_id(s) [${filingIds.slice(0, 5).join(', ')}${filingIds.length > 5 ? ', ...' : ''}] ` +
+      `remain in the dataset alongside the new, correct rows written this run. Consumers ` +
+      `should filter to the latest row per filing_id by lastModifiedAt, or filter ` +
+      `parse_status="ok"/"ocr" to see only real transaction data.`,
     );
   }
 

@@ -3,13 +3,15 @@ import { fetchAll } from '../fetcher/senateFetcher.js';
 import { parseHtml } from '../parser/index.js';
 import { normalizeAll } from '../transformer/normalize.js';
 import { SqliteStore } from '../store/sqliteStore.js';
-import { dedup, generateId, computeContentHash, latestBySourceId } from '../utils/dedup.js';
+import { dedup, generateId, computeContentHash, latestBySourceId, placeholdersByFilingId } from '../utils/dedup.js';
 import { makeLogger } from '../utils/logger.js';
 import { toErrorMessage } from '../utils/errors.js';
 import { config } from '../utils/config.js';
 import type { Transaction, StoreAdapter } from '../types/index.js';
 
 const log = makeLogger('pipeline');
+
+const PLACEHOLDER_STATUSES = new Set(['fetch_failed', 'scanned_unparsed', 'parse_failed']);
 
 export interface PipelineStats {
   inserted: number;
@@ -24,6 +26,11 @@ export interface PipelineStats {
   emptyPtrCount: number;
   unknownDocTypeCount: number;
   unknownDocTypeExamples: string[];
+  // Count of filings that produced a 'fetch_failed' placeholder this run —
+  // see FetchResult in types/index.ts. Surfaced so a transient
+  // network/host failure shows up in run stats instead of the filing
+  // silently vanishing.
+  fetchFailedCount: number;
 }
 
 export interface PipelineOptions {
@@ -42,17 +49,20 @@ export async function runPipeline(
 
   // ── Step 1: Fetch ────────────────────────────────────────────────────────────
   const fetchResult = await fetchAll(fromDate, toDate);
-  const { electronicPtrCount, paperCount, emptyPtrCount, unknownDocTypeCount, unknownDocTypeExamples } = fetchResult;
+  const { electronicPtrCount, paperCount, emptyPtrCount, unknownDocTypeCount, unknownDocTypeExamples, fetchFailedCount } = fetchResult;
   log.info(
     `Filing formats: electronic=${electronicPtrCount}, paper=${paperCount}, ` +
-    `empty=${emptyPtrCount}, unknownDocType=${unknownDocTypeCount}`,
+    `empty=${emptyPtrCount}, fetchFailed=${fetchFailedCount}, unknownDocType=${unknownDocTypeCount}`,
   );
+  if (fetchFailedCount > 0) {
+    log.warn(`${fetchFailedCount} filing(s) produced a fetch_failed placeholder this run`);
+  }
 
   if (!fetchResult.success && fetchResult.records.length === 0) {
     log.error(`Fetch failed with no records: ${fetchResult.error}`);
     return {
       inserted: 0, skipped: 0, errors: 1,
-      electronicPtrCount, paperCount, emptyPtrCount, unknownDocTypeCount, unknownDocTypeExamples,
+      electronicPtrCount, paperCount, emptyPtrCount, unknownDocTypeCount, unknownDocTypeExamples, fetchFailedCount,
     };
   }
 
@@ -95,7 +105,7 @@ export async function runPipeline(
     log.warn('No valid records after normalization — nothing to store');
     return {
       inserted: 0, skipped, errors: 0,
-      electronicPtrCount, paperCount, emptyPtrCount, unknownDocTypeCount, unknownDocTypeExamples,
+      electronicPtrCount, paperCount, emptyPtrCount, unknownDocTypeCount, unknownDocTypeExamples, fetchFailedCount,
     };
   }
 
@@ -107,14 +117,54 @@ export async function runPipeline(
     log.warn(`Could not load existing records for dedup: ${toErrorMessage(err)}`);
   }
 
+  // ── Step 4b: Placeholder supersession ───────────────────────────────────────
+  // Two symmetric cases, both keyed by filing_id (not source_id — see
+  // utils/dedup.ts placeholdersByFilingId for why):
+  //
+  //   1. Incoming has a real ("ok") row for a filing_id that already has a
+  //      stale placeholder (fetch_failed/scanned_unparsed/parse_failed) in
+  //      storage — that placeholder is now wrong and must go. Collected into
+  //      staleFilingIds and deleted via store.deleteByFilingIds below.
+  //
+  //   2. Incoming is ITSELF a placeholder for a filing_id that already has
+  //      real ("ok") rows in storage — a transient re-fetch failure on a
+  //      filing we already successfully parsed before. Writing this
+  //      placeholder would be a regression (real data replaced by "we
+  //      don't know"), so it's filtered out of the batch entirely rather
+  //      than saved.
+  const existingPlaceholderByFilingId = placeholdersByFilingId(existing);
+  const existingRealFilingIds = new Set(
+    existing.filter((t) => t.parse_status === 'ok').map((t) => t.filing_id),
+  );
+
+  const staleFilingIds = new Set<string>();
+  const filtered: Transaction[] = [];
+  for (const t of normalized) {
+    const isReal = t.parse_status === 'ok';
+    const isPlaceholder = PLACEHOLDER_STATUSES.has(t.parse_status);
+
+    if (isReal && existingPlaceholderByFilingId.has(t.filing_id)) {
+      staleFilingIds.add(t.filing_id);
+    }
+    if (isPlaceholder && existingRealFilingIds.has(t.filing_id)) {
+      log.info(
+        `Discarding ${t.parse_status} placeholder for filing_id="${t.filing_id}" — ` +
+        `real transaction rows already exist for this filing; a transient re-fetch ` +
+        `failure must never downgrade already-confirmed data`,
+      );
+      continue;
+    }
+    filtered.push(t);
+  }
+
   // ── Step 5: Dedup ────────────────────────────────────────────────────────────
-  const netNew = dedup(normalized, existing);
-  log.info(`Dedup: ${netNew.length} net-new (${normalized.length - netNew.length} already stored)`);
+  const netNew = dedup(filtered, existing);
+  log.info(`Dedup: ${netNew.length} net-new (${filtered.length - netNew.length} already stored)`);
 
   if (netNew.length === 0) {
     return {
       inserted: 0, skipped, errors: 0,
-      electronicPtrCount, paperCount, emptyPtrCount, unknownDocTypeCount, unknownDocTypeExamples,
+      electronicPtrCount, paperCount, emptyPtrCount, unknownDocTypeCount, unknownDocTypeExamples, fetchFailedCount,
     };
   }
 
@@ -183,8 +233,20 @@ export async function runPipeline(
     errors = 1;
   }
 
+  // Delete stale placeholders AFTER the real rows are confirmed saved — if
+  // save() above throws, we keep the old placeholder rather than deleting
+  // it and ending up with neither (a real silent-drop, which is exactly
+  // what this whole mechanism exists to prevent).
+  if (staleFilingIds.size > 0 && errors === 0) {
+    try {
+      await store.deleteByFilingIds([...staleFilingIds]);
+    } catch (err) {
+      log.warn(`Could not delete stale placeholder(s): ${toErrorMessage(err)}`);
+    }
+  }
+
   return {
     inserted: withIds.length, skipped, errors,
-    electronicPtrCount, paperCount, emptyPtrCount, unknownDocTypeCount, unknownDocTypeExamples,
+    electronicPtrCount, paperCount, emptyPtrCount, unknownDocTypeCount, unknownDocTypeExamples, fetchFailedCount,
   };
 }

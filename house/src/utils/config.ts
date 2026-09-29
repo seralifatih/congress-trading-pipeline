@@ -10,6 +10,15 @@ const ConfigSchema = z.object({
   CRON_SECRET: z.string().default(''),
   FRONTEND_ORIGIN: z.string().default('http://localhost:3000'),
   LAST_RUN_PATH: z.string().default('./data/last_run.json'),
+  // OCR prototype for scanned House PTRs (McCaul template only) — see
+  // src/ocr/README.md. Defaults OFF: on the one real filing it's been
+  // measured against, it burns ~96s of CLI OCR compute and still rejects
+  // the filing every time (a residual Tesseract glyph defect — see the
+  // README), so leaving it on by default would just be paying that cost
+  // for no recovered rows. With it off, a scanned filing goes straight to
+  // the scanned_unparsed placeholder exactly as before this prototype
+  // existed — no behavior change for existing users.
+  ENABLE_OCR: z.coerce.boolean().default(false),
 });
 
 function load() {

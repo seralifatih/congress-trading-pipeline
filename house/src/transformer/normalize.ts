@@ -205,16 +205,23 @@ function skipReason(raw: RawTransaction, type: 'buy' | 'sell' | 'exchange' | nul
 
 // ─── Main export ──────────────────────────────────────────────────────────────
 
-// A 'scanned_unparsed' or 'parse_failed' row is a placeholder for a filing
-// that produced no transaction-detail data — either no text layer at all
-// (scanned/paper PTR) or a text layer whose row shape TX_RE doesn't
-// recognize (a parser gap) — see housePdfParser.ts. Every transaction-detail
-// field is intentionally empty, so none of the normal
+// A 'fetch_failed', 'scanned_unparsed', or 'parse_failed' row is a
+// placeholder for a filing that produced no transaction-detail data —
+// respectively: the PDF download itself failed (houseFetcher.ts), no text
+// layer at all (scanned/paper PTR), or a text layer whose row shape TX_RE
+// doesn't recognize (a parser gap) — see housePdfParser.ts. Every
+// transaction-detail field is intentionally empty, so none of the normal
 // validation/normalization below applies to it. Passed straight through so
 // the filing isn't silently dropped from the dataset.
+const PLACEHOLDER_STATUSES = new Set(['fetch_failed', 'scanned_unparsed', 'parse_failed']);
+
+function isPlaceholderStatus(status: string): status is 'fetch_failed' | 'scanned_unparsed' | 'parse_failed' {
+  return PLACEHOLDER_STATUSES.has(status);
+}
+
 function normalizePlaceholder(
   raw: RawTransaction,
-  parse_status: 'scanned_unparsed' | 'parse_failed',
+  parse_status: 'fetch_failed' | 'scanned_unparsed' | 'parse_failed',
 ): Transaction {
   return {
     politician: raw.politician.trim(),
@@ -229,11 +236,13 @@ function normalizePlaceholder(
     amount_max: null,
     owner: null,
     source_id: raw.source_id,
+    filing_id: raw.filing_id,
     content_hash: '',
     filing_type: raw.filing_type,
     amendment_number: null,
     parse_status,
     pdf_url: raw.pdf_url,
+    ocr_confidence: null,
     fetchedAt: '',
     lastModifiedAt: '',
     revisionCount: 0,
@@ -241,7 +250,7 @@ function normalizePlaceholder(
 }
 
 export function normalize(raw: RawTransaction): Transaction | null {
-  if (raw.parse_status === 'scanned_unparsed' || raw.parse_status === 'parse_failed') {
+  if (isPlaceholderStatus(raw.parse_status)) {
     return normalizePlaceholder(raw, raw.parse_status);
   }
 
@@ -258,6 +267,11 @@ export function normalize(raw: RawTransaction): Transaction | null {
 
   const { amount_min, amount_max } = parseAmount(raw.amount);
 
+  // 'ocr' rows carry full transaction-detail fields like 'ok' (see
+  // ocr/index.ts) — the only difference is parse_status itself and
+  // ocr_confidence, which normalizePlaceholder-style rows never have.
+  const parse_status = raw.parse_status === 'ocr' ? 'ocr' : 'ok';
+
   return {
     politician: raw.politician.trim(),
     transaction_date: transaction_date ?? filing_date!,
@@ -271,11 +285,13 @@ export function normalize(raw: RawTransaction): Transaction | null {
     amount_max,
     owner: normalizeOwner(raw.owner),
     source_id: raw.source_id,
+    filing_id: raw.filing_id,
     content_hash: '', // filled in by pipeline.ts alongside id, once amount_min/max etc. are final
     filing_type: raw.filing_type,
     amendment_number: null,
-    parse_status: 'ok',
+    parse_status,
     pdf_url: raw.pdf_url,
+    ocr_confidence: parse_status === 'ocr' ? raw.ocr_confidence : null,
     fetchedAt: '',      // filled in by pipeline.ts — first-seen or carried forward on revision
     lastModifiedAt: '', // filled in by pipeline.ts
     revisionCount: 0,   // filled in by pipeline.ts
@@ -287,7 +303,7 @@ export function normalizeAll(raws: RawTransaction[]): Transaction[] {
   let skipped = 0;
 
   for (const raw of raws) {
-    if (raw.parse_status === 'scanned_unparsed' || raw.parse_status === 'parse_failed') {
+    if (isPlaceholderStatus(raw.parse_status)) {
       results.push(normalizePlaceholder(raw, raw.parse_status));
       continue;
     }

@@ -7,10 +7,10 @@ const VALID_OWNERS = new Set(['self', 'joint', 'spouse', 'child']);
 export function validateTransaction(t: Transaction): string[] {
   const errors: string[] = [];
 
-  // A 'scanned_unparsed' placeholder (paper filing) has every
-  // transaction-detail field null by design — none of the checks below
-  // apply to it. See types/index.ts parse_status.
-  if (t.parse_status === 'scanned_unparsed') return errors;
+  // A placeholder row (fetch_failed/scanned_unparsed/parse_failed) has
+  // every transaction-detail field null by design — none of the checks
+  // below apply to it. See types/index.ts parse_status.
+  if (t.parse_status !== 'ok') return errors;
 
   if (t.transaction_date === null || !isValid(parseISO(t.transaction_date))) {
     errors.push(`transaction_date "${t.transaction_date}" is not a valid date`);

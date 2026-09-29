@@ -13,6 +13,7 @@
       "owner",
       "id",
       "source_id",
+      "filing_id",
       "content_hash",
       "parse_status",
       "fetchedAt",
@@ -29,8 +30,14 @@
       "source_id": {
         "type": "string",
         "title": "Source document ID",
-        "description": "The source PTR's document id plus the row's ordinal within it (<ptr_uuid>|<row_index>). Identifies exactly which document and line produced this row.",
+        "description": "The source PTR's document id plus the row's ordinal within it (<doc_id>|<row_index>), or <doc_id>|fetch_failed / <doc_id>|paper / <doc_id>|parse_failed for the three placeholder kinds.",
         "example": "257795ae-e1b2-411d-b562-8fe4c2a4f2a1|6"
+      },
+      "filing_id": {
+        "type": "string",
+        "title": "Filing ID",
+        "description": "The filing's own document id, shared by every row and placeholder from this one filing — unlike source_id, which is per-row and therefore different for a placeholder (one row per filing) versus real transaction rows (one row per line item). Used to recognize when a later run's real rows supersede a stale placeholder for the same filing.",
+        "example": "257795ae-e1b2-411d-b562-8fe4c2a4f2a1"
       },
       "content_hash": {
         "type": "string",
@@ -54,14 +61,14 @@
       "parse_status": {
         "type": "string",
         "title": "Parse status",
-        "description": "'ok' for a normally-parsed row. 'scanned_unparsed' means this filing was submitted on paper — Senate EFD serves it as a scanned image/PDF at /search/view/paper/<id>/, not the structured HTML table electronic PTRs get, and there is no OCR fallback. The row is a placeholder: every transaction-detail field (transaction_date, ticker, asset_name, asset_type, asset_subtype, type, amount_min, amount_max, owner) is null, and pdf_url points at the filing's detail page.",
-        "enum": ["ok", "scanned_unparsed"],
+        "description": "'ok' for a normally-parsed row. 'fetch_failed' means the detail-page fetch itself failed after retries — the filing's content was never examined; transient, superseded automatically once a later run's fetch succeeds for the same filing. 'scanned_unparsed' means this filing was submitted on paper — Senate EFD serves it as a scanned image/PDF at /search/view/paper/<id>/, not the structured HTML table electronic PTRs get, and there is no OCR fallback. 'parse_failed' means the /ptr/<uuid>/ page fetched successfully but had zero parseable table rows — a parser bug or a Senate EFD layout change. Every non-'ok' status is a placeholder row: every transaction-detail field (transaction_date, ticker, asset_name, asset_type, asset_subtype, type, amount_min, amount_max, owner) is null, and pdf_url points at the filing's detail page. No filing is ever silently dropped from output.",
+        "enum": ["ok", "fetch_failed", "scanned_unparsed", "parse_failed"],
         "example": "ok"
       },
       "pdf_url": {
         "type": ["string", "null"],
         "title": "Source PDF URL",
-        "description": "Populated only on a 'scanned_unparsed' placeholder row, pointing at the paper filing's detail page (no per-row PDF exists — the whole filing is one scanned document). Null on every normally-parsed row — Senate's electronic PTR source is an HTML page, not a per-row PDF.",
+        "description": "Populated only on a placeholder row (fetch_failed/scanned_unparsed/parse_failed), pointing at the filing's detail page (no per-row PDF exists on this source). Null on every normally-parsed row — Senate's electronic PTR source is an HTML page, not a per-row PDF.",
         "example": null
       },
       "fetchedAt": {
@@ -91,7 +98,7 @@
       "transaction_date": {
         "type": ["string", "null"],
         "title": "Transaction date",
-        "description": "ISO date (YYYY-MM-DD) when the trade was executed. Null on a 'scanned_unparsed' placeholder row — see parse_status.",
+        "description": "ISO date (YYYY-MM-DD) when the trade was executed. Null on any placeholder row (fetch_failed/scanned_unparsed/parse_failed) — see parse_status.",
         "example": "2026-04-15"
       },
       "filing_date": {
@@ -109,45 +116,45 @@
       "asset_name": {
         "type": ["string", "null"],
         "title": "Asset name",
-        "description": "Full asset description as reported on the PTR. Null on a 'scanned_unparsed' placeholder row.",
+        "description": "Full asset description as reported on the PTR. Null on any placeholder row (fetch_failed/scanned_unparsed/parse_failed).",
         "example": "NVIDIA Corporation - Common Stock"
       },
       "asset_type": {
         "type": ["string", "null"],
         "title": "Asset type",
-        "description": "Senate EFD asset classification. Null on a 'scanned_unparsed' placeholder row.",
+        "description": "Senate EFD asset classification. Null on any placeholder row (fetch_failed/scanned_unparsed/parse_failed).",
         "example": "Stock"
       },
       "asset_subtype": {
         "type": ["string", "null"],
         "title": "Asset subtype",
-        "description": "Derived from asset_name, only when asset_type is 'Stock': Senate's own asset-type checkboxes have no ETF/mutual-fund option, so filers commonly mark those as 'Stock'. 'ETF' when asset_name contains the word 'ETF'; 'Mutual Fund' when it contains 'Fund' (optionally preceded by 'Mutual' or 'Index'). Null for every other asset_type (e.g. 'Other', 'Non-Public Stock') — there, the source's own label is treated as more reliable than a name-text guess. Also null on a 'scanned_unparsed' placeholder row.",
+        "description": "Derived from asset_name, only when asset_type is 'Stock': Senate's own asset-type checkboxes have no ETF/mutual-fund option, so filers commonly mark those as 'Stock'. 'ETF' when asset_name contains the word 'ETF'; 'Mutual Fund' when it contains 'Fund' (optionally preceded by 'Mutual' or 'Index'). Null for every other asset_type (e.g. 'Other', 'Non-Public Stock') — there, the source's own label is treated as more reliable than a name-text guess. Also null on any placeholder row (fetch_failed/scanned_unparsed/parse_failed).",
         "enum": ["ETF", "Mutual Fund", null],
         "example": "ETF"
       },
       "type": {
         "type": ["string", "null"],
         "title": "Trade type",
-        "description": "Normalized to 'buy' (Purchase), 'sell' (Sale Full / Sale Partial), or 'exchange' (an asset swap, e.g. a called security or merger conversion — reported by the source as its own transaction type, not a buy or sell). Null on a 'scanned_unparsed' placeholder row.",
+        "description": "Normalized to 'buy' (Purchase), 'sell' (Sale Full / Sale Partial), or 'exchange' (an asset swap, e.g. a called security or merger conversion — reported by the source as its own transaction type, not a buy or sell). Null on any placeholder row (fetch_failed/scanned_unparsed/parse_failed).",
         "enum": ["buy", "sell", "exchange", null],
         "example": "buy"
       },
       "amount_min": {
         "type": ["number", "null"],
         "title": "Amount lower bound",
-        "description": "Lower bound of the reported amount range, in USD. Usually a whole dollar disclosure bracket, but a single exact-amount disclosure can carry cents (e.g. 2722.5). Null on a 'scanned_unparsed' placeholder row.",
+        "description": "Lower bound of the reported amount range, in USD. Usually a whole dollar disclosure bracket, but a single exact-amount disclosure can carry cents (e.g. 2722.5). Null on any placeholder row (fetch_failed/scanned_unparsed/parse_failed).",
         "example": 1001
       },
       "amount_max": {
         "type": ["number", "null"],
         "title": "Amount upper bound",
-        "description": "Upper bound of the reported amount range, in USD. Usually a whole dollar disclosure bracket, but a single exact-amount disclosure can carry cents (e.g. 2722.5). Null for unbounded 'Over $X' brackets, and on a 'scanned_unparsed' placeholder row.",
+        "description": "Upper bound of the reported amount range, in USD. Usually a whole dollar disclosure bracket, but a single exact-amount disclosure can carry cents (e.g. 2722.5). Null for unbounded 'Over $X' brackets, and on any placeholder row (fetch_failed/scanned_unparsed/parse_failed).",
         "example": 15000
       },
       "owner": {
         "type": ["string", "null"],
         "title": "Owner",
-        "description": "Account owner classification per STOCK Act. Null on a 'scanned_unparsed' placeholder row.",
+        "description": "Account owner classification per STOCK Act. Null on any placeholder row (fetch_failed/scanned_unparsed/parse_failed).",
         "enum": ["self", "joint", "spouse", "child", null],
         "example": "self"
       }
@@ -222,6 +229,7 @@
           "amount_max",
           "owner",
           "source_id",
+          "filing_id",
           "content_hash",
           "filing_type",
           "amendment_number",

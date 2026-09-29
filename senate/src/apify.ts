@@ -52,8 +52,16 @@ async function main(): Promise<void> {
     log.info(
       `Filing formats this run: electronic_ptr_count=${stats.electronicPtrCount}, ` +
       `paper_count=${stats.paperCount}, empty_ptr_count=${stats.emptyPtrCount}, ` +
-      `unknown_doc_type_count=${stats.unknownDocTypeCount}`,
+      `fetch_failed_count=${stats.fetchFailedCount}, unknown_doc_type_count=${stats.unknownDocTypeCount}`,
     );
+    if (stats.fetchFailedCount > 0) {
+      log.warn(
+        `${stats.fetchFailedCount} filing(s) produced a fetch_failed placeholder this run — ` +
+        `the PTR detail-page fetch failed after retries (network/timeout/non-2xx), not a ` +
+        `parser or format issue. Transient: a later run that successfully fetches the same ` +
+        `filing automatically supersedes this placeholder. See dataset rows with parse_status="fetch_failed".`,
+      );
+    }
     if (stats.unknownDocTypeCount > 0) {
       log.warn(
         `${stats.unknownDocTypeCount} listing link(s) matched neither /ptr/ nor /paper/ — ` +
@@ -63,8 +71,9 @@ async function main(): Promise<void> {
     // Written to the run's default key-value store under 'OUTPUT' — the
     // standard Apify convention, visible in the console without a separate
     // lookup. Includes electronicPtrCount/paperCount/emptyPtrCount/
-    // unknownDocTypeCount so the electronic-vs-paper ratio (and any new,
-    // unrecognized link shape) can be read back after any production run.
+    // fetchFailedCount/unknownDocTypeCount so the electronic-vs-paper ratio,
+    // any transient fetch failures, and any new/unrecognized link shape can
+    // be read back after any production run.
     await Actor.setValue('OUTPUT', stats);
   } catch (err) {
     log.error('Actor failed', { error: toErrorMessage(err) });

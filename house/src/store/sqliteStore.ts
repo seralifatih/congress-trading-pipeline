@@ -25,11 +25,13 @@ const CREATE_TABLE = `
     amount_max      REAL,
     owner           TEXT,
     source_id       TEXT NOT NULL,
+    filing_id       TEXT NOT NULL DEFAULT '',
     content_hash    TEXT NOT NULL,
     filing_type     TEXT,
     amendment_number INTEGER,
     parse_status    TEXT NOT NULL DEFAULT 'ok',
     pdf_url         TEXT,
+    ocr_confidence  REAL,
     fetchedAt       TEXT NOT NULL,
     lastModifiedAt  TEXT NOT NULL,
     revisionCount   INTEGER NOT NULL DEFAULT 0,
@@ -53,11 +55,13 @@ interface TransactionRow {
   amount_max: number | null;
   owner: string | null;
   source_id: string | null;
+  filing_id: string | null;
   content_hash: string | null;
   filing_type: string | null;
   amendment_number: number | null;
   parse_status: string;
   pdf_url: string | null;
+  ocr_confidence: number | null;
   fetchedAt: string;
   lastModifiedAt: string;
   revisionCount: number;
@@ -79,11 +83,13 @@ function rowToTransaction(row: TransactionRow): Transaction {
     amount_max: row.amount_max ?? null,
     owner: row.owner as Transaction['owner'],
     source_id: row.source_id ?? '',
+    filing_id: row.filing_id ?? '',
     content_hash: row.content_hash ?? '',
     filing_type: row.filing_type as Transaction['filing_type'],
     amendment_number: row.amendment_number,
     parse_status: (row.parse_status as Transaction['parse_status']) ?? 'ok',
     pdf_url: row.pdf_url ?? null,
+    ocr_confidence: row.ocr_confidence ?? null,
     fetchedAt: row.fetchedAt,
     lastModifiedAt: row.lastModifiedAt,
     revisionCount: row.revisionCount ?? 0,
@@ -98,7 +104,7 @@ function rowToTransaction(row: TransactionRow): Transaction {
 // CREATE_TABLE below recreates it with the current shape. Runs automatically
 // on every connect — no manual step.
 
-const REQUIRED_COLUMNS = ['source_id', 'content_hash', 'filing_type', 'amendment_number', 'asset_subtype', 'parse_status', 'pdf_url', 'fetchedAt', 'lastModifiedAt', 'revisionCount'];
+const REQUIRED_COLUMNS = ['source_id', 'filing_id', 'content_hash', 'filing_type', 'amendment_number', 'asset_subtype', 'parse_status', 'pdf_url', 'ocr_confidence', 'fetchedAt', 'lastModifiedAt', 'revisionCount'];
 
 function migrateIfNeeded(db: Database.Database): void {
   const tableExists = db
@@ -154,12 +160,12 @@ export class SqliteStore implements StoreAdapter {
     const insert = this.db.prepare(`
       INSERT OR IGNORE INTO transactions
         (id, politician, transaction_date, filing_date, ticker,
-         asset_name, asset_type, asset_subtype, type, amount_min, amount_max, owner, source_id,
-         content_hash, filing_type, amendment_number, parse_status, pdf_url, fetchedAt, lastModifiedAt, revisionCount)
+         asset_name, asset_type, asset_subtype, type, amount_min, amount_max, owner, source_id, filing_id,
+         content_hash, filing_type, amendment_number, parse_status, pdf_url, ocr_confidence, fetchedAt, lastModifiedAt, revisionCount)
       VALUES
         (@id, @politician, @transaction_date, @filing_date, @ticker,
-         @asset_name, @asset_type, @asset_subtype, @type, @amount_min, @amount_max, @owner, @source_id,
-         @content_hash, @filing_type, @amendment_number, @parse_status, @pdf_url, @fetchedAt, @lastModifiedAt, @revisionCount)
+         @asset_name, @asset_type, @asset_subtype, @type, @amount_min, @amount_max, @owner, @source_id, @filing_id,
+         @content_hash, @filing_type, @amendment_number, @parse_status, @pdf_url, @ocr_confidence, @fetchedAt, @lastModifiedAt, @revisionCount)
     `);
 
     const saveMany = this.db.transaction((rows: Transaction[]) => {
@@ -180,11 +186,13 @@ export class SqliteStore implements StoreAdapter {
           amount_max: t.amount_max ?? null,
           owner: t.owner,
           source_id: t.source_id,
+          filing_id: t.filing_id,
           content_hash: t.content_hash,
           filing_type: t.filing_type ?? null,
           amendment_number: t.amendment_number ?? null,
           parse_status: t.parse_status,
           pdf_url: t.pdf_url ?? null,
+          ocr_confidence: t.ocr_confidence ?? null,
           fetchedAt: t.fetchedAt,
           lastModifiedAt: t.lastModifiedAt,
           revisionCount: t.revisionCount,
@@ -196,6 +204,32 @@ export class SqliteStore implements StoreAdapter {
 
     const inserted = saveMany(transactions);
     log.info(`save: ${inserted} inserted, ${transactions.length - inserted} already existed`);
+  }
+
+  // ─── StoreAdapter: deleteByFilingIds ─────────────────────────────────────────
+  // Deletes only the PLACEHOLDER rows (fetch_failed/scanned_unparsed/
+  // parse_failed) whose filing_id is in the given list — used by
+  // pipeline.ts's supersede step to remove a stale placeholder once a later
+  // run produces real rows for the same filing. Deliberately scoped to
+  // placeholder parse_status values, NOT "every row with this filing_id":
+  // by the time this runs, the real ("ok"/"ocr") rows for the same
+  // filing_id have already been saved in this same pipeline run (see
+  // pipeline.ts — save() happens before deleteByFilingIds()), and a
+  // filing_id-only WHERE clause would delete those too, corrupting the very
+  // data this mechanism exists to protect. Confirmed by
+  // tests/pipeline.test.js's supersession test, which caught this exact bug
+  // in an earlier version of this method.
+
+  async deleteByFilingIds(filingIds: string[]): Promise<void> {
+    if (filingIds.length === 0) return;
+
+    const filingPlaceholders = filingIds.map(() => '?').join(',');
+    const stmt = this.db.prepare(
+      `DELETE FROM transactions WHERE filing_id IN (${filingPlaceholders}) ` +
+      `AND parse_status IN ('fetch_failed', 'scanned_unparsed', 'parse_failed')`,
+    );
+    const info = stmt.run(...filingIds);
+    log.info(`deleteByFilingIds: removed ${info.changes} stale placeholder row(s) for ${filingIds.length} filing(s)`);
   }
 
   // ─── StoreAdapter: query ─────────────────────────────────────────────────────

@@ -55,6 +55,7 @@ function serialize(t: Transaction): Record<string, unknown> {
     is_active: true,
     parse_status: t.parse_status,
     pdf_url: t.pdf_url ?? null,
+    ocr_confidence: t.ocr_confidence ?? null,
     created_at: t.created_at ?? null,
   };
 }

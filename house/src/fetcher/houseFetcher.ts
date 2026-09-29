@@ -8,6 +8,7 @@ import { makeLogger } from '../utils/logger.js';
 import { config } from '../utils/config.js';
 import { withRetry } from '../utils/retry.js';
 import { parseHousePtrText } from '../parser/housePdfParser.js';
+import { attemptOcr, terminateOcrWorker } from '../ocr/index.js';
 
 const log = makeLogger('houseFetcher');
 
@@ -114,14 +115,20 @@ function parseIndex(xml: string, year: number, fromDate: string, toDate: string)
 
 // ─── Per-PTR PDF fetch + parse ────────────────────────────────────────────────
 
-async function fetchPdfText(year: number, docId: string): Promise<string> {
+interface FetchedPdf {
+  text: string;
+  buffer: Buffer;
+}
+
+async function fetchPdf(year: number, docId: string): Promise<FetchedPdf> {
   const res = await axios.get<ArrayBuffer>(ptrPdfUrl(year, docId), {
     headers: HEADERS,
     timeout: TIMEOUT_MS,
     responseType: 'arraybuffer',
   });
-  const data = await pdfParse(Buffer.from(res.data));
-  return data.text;
+  const buffer = Buffer.from(res.data);
+  const data = await pdfParse(buffer);
+  return { text: data.text, buffer };
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -152,18 +159,24 @@ export async function fetchAllHouse(
   } catch (err) {
     const message = err instanceof AxiosError ? err.message : String(err);
     log.error(`House index fetch failed: ${message}`);
-    return { success: false, records: [], error: `House index: ${message}`, parseFailedCount: 0 };
+    return {
+      success: false, records: [], error: `House index: ${message}`,
+      fetchFailedCount: 0, parseFailedCount: 0, ocrFilingCount: 0, ocrRowCount: 0,
+    };
   }
 
   if (filings.length === 0) {
-    return { success: true, records: [], parseFailedCount: 0 };
+    return { success: true, records: [], fetchFailedCount: 0, parseFailedCount: 0, ocrFilingCount: 0, ocrRowCount: 0 };
   }
 
   // 2) Fetch each PDF, parse rows
   const records: RawTransaction[] = [];
   let errors = 0;
+  let fetchFailed = 0;
   let scanned = 0;
   let parseFailed = 0;
+  let ocrFilings = 0;
+  let ocrRows = 0;
 
   const debugLimit = process.env['DEBUG_PTR_LIMIT'] ? parseInt(process.env['DEBUG_PTR_LIMIT'], 10) : 0;
   const filingsToFetch = debugLimit > 0 ? filings.slice(0, debugLimit) : filings;
@@ -173,35 +186,97 @@ export async function fetchAllHouse(
 
   for (let i = 0; i < filingsToFetch.length; i++) {
     const f = filingsToFetch[i]!;
+    const pdfUrl = ptrPdfUrl(f.year, f.docId);
     try {
-      const text = await withRetry(() => fetchPdfText(f.year, f.docId), 2, 500);
-      const parsed = parseHousePtrText({
+      const { text, buffer } = await withRetry(() => fetchPdf(f.year, f.docId), 2, 500);
+      let parsed = parseHousePtrText({
         text,
         member: f.member,
         filingDate: f.filingDate,
         docId: f.docId,
-        pdfUrl: ptrPdfUrl(f.year, f.docId),
+        pdfUrl,
       });
-      if (parsed.some((r) => r.parse_status === 'scanned_unparsed')) scanned++;
+
+      if (parsed.some((r) => r.parse_status === 'scanned_unparsed')) {
+        // No text layer — try OCR before accepting the placeholder, but only
+        // if explicitly enabled (see config.ts's ENABLE_OCR / src/ocr/
+        // README.md): this is still a prototype with a known residual
+        // failure mode, and running it unconditionally would spend ~96s of
+        // CLI OCR compute per scanned filing for no recovered rows on the
+        // one real filing measured so far. Disabled, this is byte-for-byte
+        // the same scanned_unparsed behavior as before OCR existed.
+        if (config.ENABLE_OCR) {
+          // A known template must match AND every row must validate, or
+          // this filing stays scanned_unparsed (all-or-nothing) — see
+          // ocr/index.ts.
+          const ocrResult = await attemptOcr(buffer, f.member, f.filingDate, f.docId, pdfUrl);
+          if (ocrResult.succeeded) {
+            parsed = ocrResult.rows;
+            ocrFilings++;
+            ocrRows += ocrResult.rows.length;
+          } else {
+            scanned++;
+          }
+        } else {
+          scanned++;
+        }
+      }
       if (parsed.some((r) => r.parse_status === 'parse_failed')) parseFailed++;
       records.push(...parsed);
     } catch (err) {
+      // The PDF download itself failed after withRetry's 2 retries —
+      // network error, timeout, non-2xx, or a buffer pdf-parse couldn't
+      // read. We never got to look at this filing's content at all. This
+      // filing WAS enumerated in the House index, so silently continuing to
+      // the next one would drop a known filing from output with no trace —
+      // same reasoning as parseHousePtrText's parse_failed placeholder, one
+      // layer up. Emit a fetch_failed placeholder instead: transient by
+      // nature, so pipeline.ts's supersede step (see utils/dedup.ts
+      // placeholdersByFilingId) replaces it with real rows the moment a
+      // later run's fetch succeeds for this same filing_id.
       errors++;
-      log.warn(`House PTR ${f.docId} (${f.member}) failed: ${err instanceof Error ? err.message : String(err)}`);
+      fetchFailed++;
+      const message = err instanceof Error ? err.message : String(err);
+      log.warn(`House PTR ${f.docId} (${f.member}) failed: ${message} — emitting fetch_failed placeholder`);
+      records.push({
+        politician: f.member,
+        transaction_date: '',
+        filing_date: f.filingDate,
+        ticker: '',
+        asset_name: '',
+        asset_type: '',
+        type: '',
+        amount: '',
+        owner: '',
+        source_id: `house_${f.docId}_fetch_failed`,
+        filing_id: f.docId,
+        filing_type: null,
+        parse_status: 'fetch_failed',
+        pdf_url: pdfUrl,
+        ocr_confidence: null,
+        raw_json: {
+          source: 'house',
+          doc_id: f.docId,
+          fetch_error: message,
+        },
+      });
     }
 
     if ((i + 1) % 25 === 0 || i === filingsToFetch.length - 1) {
       log.info(
         `House progress: ${i + 1}/${filingsToFetch.length} PTRs → ${records.length} txs ` +
-        `(${scanned} scanned, ${parseFailed} parse_failed)`,
+        `(${fetchFailed} fetch_failed, ${scanned} scanned, ${parseFailed} parse_failed, ${ocrFilings} ocr filings / ${ocrRows} ocr rows)`,
       );
     }
     if (i < filingsToFetch.length - 1) await delay(PDF_DELAY_MS);
   }
 
+  await terminateOcrWorker();
+
   log.info(
     `fetchAllHouse complete: ${filingsToFetch.length} filings → ${records.length} txs, ` +
-    `${scanned} scanned_unparsed, ${parseFailed} parse_failed, ${errors} errors`,
+    `${fetchFailed} fetch_failed, ${scanned} scanned_unparsed, ${parseFailed} parse_failed, ${errors} errors, ` +
+    `${ocrFilings} ocr filings / ${ocrRows} ocr rows`,
   );
 
   const partial = errors > filingsToFetch.length / 4;
@@ -209,6 +284,9 @@ export async function fetchAllHouse(
     success: !partial,
     records,
     error: partial ? `${errors}/${filings.length} House PDF fetches failed` : undefined,
+    fetchFailedCount: fetchFailed,
     parseFailedCount: parseFailed,
+    ocrFilingCount: ocrFilings,
+    ocrRowCount: ocrRows,
   };
 }

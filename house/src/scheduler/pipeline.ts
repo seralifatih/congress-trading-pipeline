@@ -2,7 +2,7 @@ import { format, subDays } from 'date-fns';
 import { fetchAllHouse } from '../fetcher/houseFetcher.js';
 import { normalizeAll } from '../transformer/normalize.js';
 import { SqliteStore } from '../store/sqliteStore.js';
-import { dedup, generateId, computeContentHash, latestBySourceId } from '../utils/dedup.js';
+import { dedup, generateId, computeContentHash, latestBySourceId, placeholdersByFilingId } from '../utils/dedup.js';
 import { makeLogger } from '../utils/logger.js';
 import { toErrorMessage } from '../utils/errors.js';
 import { config } from '../utils/config.js';
@@ -10,14 +10,25 @@ import type { Transaction, StoreAdapter } from '../types/index.js';
 
 const log = makeLogger('pipeline');
 
+const PLACEHOLDER_STATUSES = new Set(['fetch_failed', 'scanned_unparsed', 'parse_failed']);
+
 export interface PipelineStats {
   inserted: number;
   skipped: number;
   errors: number;
+  // Count of filings that produced a 'fetch_failed' placeholder this run —
+  // see FetchResult in types/index.ts. Surfaced to Actor.setValue('OUTPUT',
+  // ...) so a transient download failure shows up in run stats instead of
+  // vanishing silently.
+  fetchFailedCount: number;
   // Count of filings that produced a 'parse_failed' placeholder this run —
   // see FetchResult in types/index.ts. Surfaced to Actor.setValue('OUTPUT',
   // ...) so a parser gap shows up in run stats instead of vanishing silently.
   parseFailedCount: number;
+  // Filings recovered via OCR this run, and the total row count across
+  // them — see FetchResult in types/index.ts / ocr/index.ts.
+  ocrFilingCount: number;
+  ocrRowCount: number;
 }
 
 export interface PipelineOptions {
@@ -36,14 +47,20 @@ export async function runPipeline(
 
   // ── Step 1: Fetch House ZIP + per-PTR PDFs ──────────────────────────────────
   const fetchResult = await fetchAllHouse(fromDate, toDate);
-  const { parseFailedCount } = fetchResult;
+  const { fetchFailedCount, parseFailedCount, ocrFilingCount, ocrRowCount } = fetchResult;
+  if (fetchFailedCount > 0) {
+    log.warn(`${fetchFailedCount} filing(s) produced a fetch_failed placeholder this run`);
+  }
   if (parseFailedCount > 0) {
     log.warn(`${parseFailedCount} filing(s) produced a parse_failed placeholder this run`);
+  }
+  if (ocrFilingCount > 0) {
+    log.info(`${ocrFilingCount} filing(s) recovered via OCR this run (${ocrRowCount} rows)`);
   }
 
   if (!fetchResult.success && fetchResult.records.length === 0) {
     log.error(`Fetch failed with no records: ${fetchResult.error}`);
-    return { inserted: 0, skipped: 0, errors: 1, parseFailedCount };
+    return { inserted: 0, skipped: 0, errors: 1, fetchFailedCount, parseFailedCount, ocrFilingCount, ocrRowCount };
   }
 
   if (!fetchResult.success) {
@@ -60,7 +77,7 @@ export async function runPipeline(
 
   if (normalized.length === 0) {
     log.warn('No valid records after normalization — nothing to store');
-    return { inserted: 0, skipped, errors: 0, parseFailedCount };
+    return { inserted: 0, skipped, errors: 0, fetchFailedCount, parseFailedCount, ocrFilingCount, ocrRowCount };
   }
 
   // ── Step 3: Load existing for dedup ─────────────────────────────────────────
@@ -71,12 +88,52 @@ export async function runPipeline(
     log.warn(`Could not load existing records for dedup: ${toErrorMessage(err)}`);
   }
 
+  // ── Step 3b: Placeholder supersession ───────────────────────────────────────
+  // Two symmetric cases, both keyed by filing_id (not source_id — see
+  // utils/dedup.ts placeholdersByFilingId for why):
+  //
+  //   1. Incoming has a real (ok/ocr) row for a filing_id that already has a
+  //      stale placeholder (fetch_failed/scanned_unparsed/parse_failed) in
+  //      storage — that placeholder is now wrong and must go. Collected into
+  //      staleFilingIds and deleted via store.deleteByFilingIds below.
+  //
+  //   2. Incoming is ITSELF a placeholder for a filing_id that already has
+  //      real (ok/ocr) rows in storage — a transient re-fetch failure on a
+  //      filing we already successfully parsed before. Writing this
+  //      placeholder would be a regression (real data replaced by "we
+  //      don't know"), so it's filtered out of the batch entirely rather
+  //      than saved.
+  const existingPlaceholderByFilingId = placeholdersByFilingId(existing);
+  const existingRealFilingIds = new Set(
+    existing.filter((t) => t.parse_status === 'ok' || t.parse_status === 'ocr').map((t) => t.filing_id),
+  );
+
+  const staleFilingIds = new Set<string>();
+  const filtered: Transaction[] = [];
+  for (const t of normalized) {
+    const isReal = t.parse_status === 'ok' || t.parse_status === 'ocr';
+    const isPlaceholder = PLACEHOLDER_STATUSES.has(t.parse_status);
+
+    if (isReal && existingPlaceholderByFilingId.has(t.filing_id)) {
+      staleFilingIds.add(t.filing_id);
+    }
+    if (isPlaceholder && existingRealFilingIds.has(t.filing_id)) {
+      log.info(
+        `Discarding ${t.parse_status} placeholder for filing_id="${t.filing_id}" — ` +
+        `real transaction rows already exist for this filing; a transient re-fetch ` +
+        `failure must never downgrade already-confirmed data`,
+      );
+      continue;
+    }
+    filtered.push(t);
+  }
+
   // ── Step 4: Dedup ───────────────────────────────────────────────────────────
-  const netNew = dedup(normalized, existing);
-  log.info(`Dedup: ${netNew.length} net-new (${normalized.length - netNew.length} already stored)`);
+  const netNew = dedup(filtered, existing);
+  log.info(`Dedup: ${netNew.length} net-new (${filtered.length - netNew.length} already stored)`);
 
   if (netNew.length === 0) {
-    return { inserted: 0, skipped, errors: 0, parseFailedCount };
+    return { inserted: 0, skipped, errors: 0, fetchFailedCount, parseFailedCount, ocrFilingCount, ocrRowCount };
   }
 
   // ── Step 5: Assign IDs, fetch/revision metadata, and save ───────────────────
@@ -144,5 +201,17 @@ export async function runPipeline(
     errors = 1;
   }
 
-  return { inserted: withIds.length, skipped, errors, parseFailedCount };
+  // Delete stale placeholders AFTER the real rows are confirmed saved — if
+  // save() above throws, we keep the old placeholder rather than deleting
+  // it and ending up with neither (a real silent-drop, which is exactly
+  // what this whole mechanism exists to prevent).
+  if (staleFilingIds.size > 0 && errors === 0) {
+    try {
+      await store.deleteByFilingIds([...staleFilingIds]);
+    } catch (err) {
+      log.warn(`Could not delete stale placeholder(s): ${toErrorMessage(err)}`);
+    }
+  }
+
+  return { inserted: withIds.length, skipped, errors, fetchFailedCount, parseFailedCount, ocrFilingCount, ocrRowCount };
 }

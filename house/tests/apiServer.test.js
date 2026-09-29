@@ -23,6 +23,7 @@ function row(overrides) {
     amount_max: 15000,
     owner: 'self',
     source_id: 'house_1_0',
+    filing_id: 'house_1',
     content_hash: 'h1',
     filing_type: 'original',
     parse_status: 'ok',
@@ -49,6 +50,7 @@ test('/api/transactions leaves out scanned_unparsed and parse_failed placeholder
     row({
       id: 'scanned-row',
       source_id: 'house_2_scanned',
+      filing_id: 'house_2',
       content_hash: 'h2',
       transaction_date: null,
       ticker: null,
@@ -64,6 +66,7 @@ test('/api/transactions leaves out scanned_unparsed and parse_failed placeholder
     row({
       id: 'parse-failed-row',
       source_id: 'house_3_parse_failed',
+      filing_id: 'house_3',
       content_hash: 'h3',
       transaction_date: null,
       ticker: null,

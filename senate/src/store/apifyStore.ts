@@ -48,6 +48,24 @@ export class ApifyStore implements StoreAdapter {
     );
   }
 
+  // Apify Dataset has no delete API (append-only, pushData-only) — a stale
+  // placeholder written on a prior run physically stays in the dataset
+  // forever. This is a real, documented platform limitation (see
+  // senate/README.md Coverage section), not something worked around here.
+  // The pipeline still calls this on every run (same as SqliteStore) so the
+  // supersede logic is uniform across both stores; here it just logs so the
+  // gap is visible in run output rather than silently doing nothing.
+  async deleteByFilingIds(filingIds: string[]): Promise<void> {
+    if (filingIds.length === 0) return;
+    log.warn(
+      `deleteByFilingIds: Apify Dataset has no delete API — ${filingIds.length} stale ` +
+      `placeholder row(s) for filing_id(s) [${filingIds.slice(0, 5).join(', ')}${filingIds.length > 5 ? ', ...' : ''}] ` +
+      `remain in the dataset alongside the new, correct rows written this run. Consumers ` +
+      `should filter to the latest row per filing_id by lastModifiedAt, or filter ` +
+      `parse_status="ok" to see only real transaction data.`,
+    );
+  }
+
   async query(filters: QueryFilters = {}): Promise<Transaction[]> {
     const dataset = await Dataset.open();
     const { items } = await dataset.getData({ clean: true });

@@ -14,6 +14,10 @@ dist/
 # Runtime data
 data/
 
+# tesseract.js's downloaded language model cache (see src/ocr/textOcr.ts) —
+# re-downloaded on demand, not something to commit
+eng.traineddata
+
 # Environment
 .env
 .env.local

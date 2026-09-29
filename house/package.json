@@ -11,6 +11,7 @@
     "test": "node --test tests/**/*.test.js"
   },
   "dependencies": {
+    "@napi-rs/canvas": "^1.0.9",
     "adm-zip": "^0.5.17",
     "apify": "^3.7.0",
     "axios": "^1.7.2",
@@ -20,6 +21,8 @@
     "fast-xml-parser": "^5.7.2",
     "node-cron": "^3.0.3",
     "pdf-parse": "^1.1.4",
+    "pdfjs-dist": "^6.3.289",
+    "tesseract.js": "^7.0.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {

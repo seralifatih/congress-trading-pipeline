@@ -429,9 +429,12 @@ function parseFilingType(html: string): { filing_type: 'original' | 'amendment' 
 // filing (that's a separate link shape, caught before we ever fetch the
 // detail page) — this means the HTML table selectors below didn't match
 // something they should have: a parser bug or a Senate EFD layout change.
-// Never turned into a placeholder row (it isn't a known-unreadable filing,
-// it's an unexplained one) — the caller just counts it via `isEmpty` so
-// production runs surface how often it happens.
+// Turned into a 'parse_failed' placeholder (mirrors House's
+// housePdfParser.ts parse_failed: markers/page fetched fine, but no row
+// shape matched) so the filing isn't silently dropped from output — see
+// buildParseFailedPlaceholder below. `isEmpty` is kept on the return value
+// purely as a diagnostic counter (FetchResult.emptyPtrCount), not as the
+// only signal something happened to this filing.
 interface PtrParseResult {
   records: RawTransaction[];
   isEmpty: boolean;
@@ -455,7 +458,7 @@ export function parsePtrTransactions(html: string, meta: FilingMeta): PtrParseRe
     const snippet = html.slice(0, 600).replace(/\s+/g, ' ');
     log.warn(`PTR ${meta.doc_id}: no rows. title="${title}" tables=${tableCount} form="${formAction}"`);
     log.warn(`PTR ${meta.doc_id} html-head: ${snippet}`);
-    return { records: out, isEmpty: true };
+    return { records: [buildParseFailedPlaceholder(meta)], isEmpty: true };
   }
 
   rows.each((idx, el) => {
@@ -476,6 +479,7 @@ export function parsePtrTransactions(html: string, meta: FilingMeta): PtrParseRe
       amount: amount ?? '',
       owner: owner ?? '',
       source_id: `${meta.doc_id}|${idx}`,
+      filing_id: meta.doc_id,
       filing_type,
       amendment_number,
       parse_status: 'ok',
@@ -490,6 +494,40 @@ export function parsePtrTransactions(html: string, meta: FilingMeta): PtrParseRe
   });
 
   return { records: out, isEmpty: false };
+}
+
+// A /ptr/<uuid>/ page that fetched successfully but whose HTML table
+// selectors matched zero rows — see parsePtrTransactions above. Every
+// transaction-detail field is blank; pdf_url points at the detail page
+// itself (Senate has no per-row PDF) so a human/parser-fix can go look.
+export function buildParseFailedPlaceholder(meta: FilingMeta): RawTransaction {
+  const detailUrl = meta.report_path.startsWith('http')
+    ? meta.report_path
+    : `${BASE}${meta.report_path}`;
+
+  return {
+    politician: meta.politician,
+    transaction_date: '',
+    filing_date: meta.filing_date,
+    ticker: '',
+    asset_name: '',
+    asset_type: '',
+    type: '',
+    amount: '',
+    owner: '',
+    source_id: `${meta.doc_id}|parse_failed`,
+    filing_id: meta.doc_id,
+    filing_type: null,
+    amendment_number: null,
+    parse_status: 'parse_failed',
+    pdf_url: detailUrl,
+    raw_json: {
+      doc_id: meta.doc_id,
+      docType: 'ptr',
+      office: meta.office,
+      empty: true,
+    },
+  };
 }
 
 // ─── Paper filing placeholder ─────────────────────────────────────────────────
@@ -516,6 +554,7 @@ export function buildPaperPlaceholder(meta: FilingMeta): RawTransaction {
     amount: '',
     owner: '',
     source_id: `${meta.doc_id}|paper`,
+    filing_id: meta.doc_id,
     filing_type: null,
     amendment_number: null,
     parse_status: 'scanned_unparsed',
@@ -525,6 +564,46 @@ export function buildPaperPlaceholder(meta: FilingMeta): RawTransaction {
       docType: 'paper',
       office: meta.office,
       paper: true,
+    },
+  };
+}
+
+// ─── Fetch-failure placeholder ────────────────────────────────────────────────
+// A /ptr/<uuid>/ detail-page fetch that failed after withRetry's retries —
+// network error, timeout, non-2xx, or a home-page redirect re-handshake
+// couldn't resolve. This filing WAS enumerated in the listing (meta is a
+// real FilingMeta), so silently continuing to the next filing would drop a
+// known filing from output with no trace — see fetchAll/fetchPage's catch
+// blocks. Transient by nature: pipeline.ts's supersede step (see utils/
+// dedup.ts placeholdersByFilingId) replaces this placeholder with real rows
+// the moment a later run's fetch succeeds for this same filing_id.
+
+export function buildFetchFailedPlaceholder(meta: FilingMeta, errorMessage: string): RawTransaction {
+  const detailUrl = meta.report_path.startsWith('http')
+    ? meta.report_path
+    : `${BASE}${meta.report_path}`;
+
+  return {
+    politician: meta.politician,
+    transaction_date: '',
+    filing_date: meta.filing_date,
+    ticker: '',
+    asset_name: '',
+    asset_type: '',
+    type: '',
+    amount: '',
+    owner: '',
+    source_id: `${meta.doc_id}|fetch_failed`,
+    filing_id: meta.doc_id,
+    filing_type: null,
+    amendment_number: null,
+    parse_status: 'fetch_failed',
+    pdf_url: detailUrl,
+    raw_json: {
+      doc_id: meta.doc_id,
+      docType: meta.docType,
+      office: meta.office,
+      fetch_error: errorMessage,
     },
   };
 }
@@ -677,6 +756,7 @@ export async function fetchPage(
     let electronicPtrCount = 0;
     let paperCount = 0;
     let emptyPtrCount = 0;
+    let fetchFailedCount = 0;
     let activeCsrf = csrf;
 
     for (let i = 0; i < filings.length; i++) {
@@ -696,14 +776,23 @@ export async function fetchPage(
         if (isEmpty) emptyPtrCount++;
         else electronicPtrCount++;
       } catch (err) {
-        log.warn(`PTR ${meta.doc_id} fetch failed: ${toAxiosMessage(err)}`);
+        // This filing WAS enumerated in the listing (meta is a real
+        // FilingMeta) — silently continuing would drop it from output with
+        // no trace. Emit a fetch_failed placeholder instead; transient, so
+        // pipeline.ts's supersede step replaces it once a later run's
+        // fetch succeeds for this filing_id.
+        const message = toAxiosMessage(err);
+        log.warn(`PTR ${meta.doc_id} fetch failed: ${message} — emitting fetch_failed placeholder`);
+        fetchFailedCount++;
+        records.push(buildFetchFailedPlaceholder(meta, message));
       }
       if (i < filings.length - 1) await delay(PTR_DELAY_MS);
     }
 
     log.info(
       `Page offset=${offset}: ${filings.length} filings → ${records.length} transactions ` +
-      `(electronic=${electronicPtrCount}, paper=${paperCount}, empty=${emptyPtrCount}, unknownDocType=${unknownDocTypeCount})`,
+      `(electronic=${electronicPtrCount}, paper=${paperCount}, empty=${emptyPtrCount}, ` +
+      `fetchFailed=${fetchFailedCount}, unknownDocType=${unknownDocTypeCount})`,
     );
     return {
       success: true,
@@ -713,6 +802,7 @@ export async function fetchPage(
       emptyPtrCount,
       unknownDocTypeCount,
       unknownDocTypeExamples,
+      fetchFailedCount,
     };
   } catch (err) {
     const message = toAxiosMessage(err);
@@ -726,6 +816,7 @@ export async function fetchPage(
       emptyPtrCount: 0,
       unknownDocTypeCount: 0,
       unknownDocTypeExamples: [],
+      fetchFailedCount: 0,
     };
   }
 }
@@ -753,6 +844,7 @@ export async function fetchAll(
       emptyPtrCount: 0,
       unknownDocTypeCount: 0,
       unknownDocTypeExamples: [],
+      fetchFailedCount: 0,
     };
   }
 
@@ -768,6 +860,7 @@ export async function fetchAll(
       emptyPtrCount: 0,
       unknownDocTypeCount: listing.unknownDocTypeCount,
       unknownDocTypeExamples: listing.unknownDocTypeExamples,
+      fetchFailedCount: 0,
     };
   }
   log.info(`Listing complete: ${listing.filings.length} PTR filings collected`);
@@ -778,6 +871,7 @@ export async function fetchAll(
   let electronicPtrCount = 0;
   let paperCount = 0;
   let emptyPtrCount = 0;
+  let fetchFailedCount = 0;
 
   const filingsToFetch = DEBUG_PTR_LIMIT > 0
     ? listing.filings.slice(0, DEBUG_PTR_LIMIT)
@@ -811,8 +905,16 @@ export async function fetchAll(
         log.info(`Detail progress: ${i + 1}/${filingsToFetch.length} PTRs → ${allRecords.length} txs`);
       }
     } catch (err) {
+      // This filing WAS enumerated in the listing (meta is a real
+      // FilingMeta) — silently continuing to the next one would drop a
+      // known filing from output with no trace. Emit a fetch_failed
+      // placeholder instead; transient, so pipeline.ts's supersede step
+      // replaces it once a later run's fetch succeeds for this filing_id.
       detailErrors++;
-      log.warn(`PTR ${meta.doc_id} (${meta.politician}) detail fetch failed: ${toAxiosMessage(err)}`);
+      fetchFailedCount++;
+      const message = toAxiosMessage(err);
+      log.warn(`PTR ${meta.doc_id} (${meta.politician}) detail fetch failed: ${message} — emitting fetch_failed placeholder`);
+      allRecords.push(buildFetchFailedPlaceholder(meta, message));
     }
     if (i < filingsToFetch.length - 1) await delay(PTR_DELAY_MS);
   }
@@ -820,7 +922,7 @@ export async function fetchAll(
   log.info(
     `fetchAll complete: ${listing.filings.length} filings → ${allRecords.length} transactions, ` +
     `${detailErrors} detail errors (electronic=${electronicPtrCount}, paper=${paperCount}, ` +
-    `empty=${emptyPtrCount}, unknownDocType=${listing.unknownDocTypeCount})`,
+    `empty=${emptyPtrCount}, fetchFailed=${fetchFailedCount}, unknownDocType=${listing.unknownDocTypeCount})`,
   );
 
   // Partial = listing was incomplete OR ≥25% of detail fetches failed
@@ -835,6 +937,7 @@ export async function fetchAll(
       emptyPtrCount,
       unknownDocTypeCount: listing.unknownDocTypeCount,
       unknownDocTypeExamples: listing.unknownDocTypeExamples,
+      fetchFailedCount,
     };
   }
 
@@ -846,6 +949,7 @@ export async function fetchAll(
     emptyPtrCount,
     unknownDocTypeCount: listing.unknownDocTypeCount,
     unknownDocTypeExamples: listing.unknownDocTypeExamples,
+    fetchFailedCount,
   };
 }
 

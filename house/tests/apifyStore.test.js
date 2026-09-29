@@ -17,6 +17,7 @@ function transactionRow(overrides = {}) {
     amount_max: 15000,
     owner: 'self',
     source_id: 'house_20035106_0',
+    filing_id: '20035106',
     content_hash: 'h',
     filing_type: null,
     amendment_number: null,

@@ -40,6 +40,11 @@ export function parseJsonSource(source: EfdSource, id: string = ''): RawTransact
     amount: str(source['amount']),
     owner: str(source['owner']),
     source_id: id || str(source['report_id']),
+    // This source shape has one row per hit, no distinct row-vs-filing
+    // grain — filing_id collapses to source_id, same reasoning as
+    // htmlParser.ts. This legacy path only ever produces "ok" rows, never
+    // placeholders, so supersede-by-filing_id is a no-op for it.
+    filing_id: id || str(source['report_id']),
     // This source shape has no filing-type field to read — genuinely
     // unavailable here, not inferred.
     filing_type: null,
