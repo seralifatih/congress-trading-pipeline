@@ -138,7 +138,8 @@ test('normalize() turns a paper placeholder into a Transaction with all detail f
   assert.ok(result);
   assert.equal(result.parse_status, 'scanned_unparsed');
   assert.equal(result.politician, 'Jane Doe');
-  assert.equal(result.filing_date, '09/17/2026');
+  // ISO, like every parsed row — was the listing's raw "MM/DD/YYYY" before.
+  assert.equal(result.filing_date, '2026-09-17');
   assert.equal(result.pdf_url, 'https://efdsearch.senate.gov/search/view/paper/998877/');
   assert.equal(result.transaction_date, null);
   assert.equal(result.asset_name, null);
@@ -191,4 +192,37 @@ test('parsePtrTransactions on a normal PTR table still extracts rows correctly',
   assert.equal(result.records[0].parse_status, 'ok');
   assert.equal(result.records[0].pdf_url, null);
   assert.equal(result.records[0].source_id, 'abc12345-e1b2-411d-b562-8fe4c2a4f2a1|0');
+});
+
+// ─── row_index_in_filing ──────────────────────────────────────────────────────
+// Identical rows inside one filing (e.g. Blumenthal's 8 identical MH Built to
+// Last purchases) share content_hash; row_index_in_filing tells them apart.
+
+function tableHtml(rowsHtml) {
+  return `<html><head><title>eFD: Report</title></head><body><h1>Periodic Transaction Report for 08/05/2026</h1>
+  <table><tbody>${rowsHtml}</tbody></table></body></html>`;
+}
+const dataRow = (n, name) =>
+  `<tr><td>${n}</td><td>08/24/2026</td><td>Spouse</td><td>--</td><td>${name}</td><td>Other</td><td>Purchase</td><td>$1,001 - $15,000</td><td>--</td></tr>`;
+
+test('row_index_in_filing is 0-based and consecutive in source order; identical rows get distinct indices', () => {
+  const meta = rowToFilingMeta(ptrRow());
+  const html = tableHtml(dataRow(1, 'MH Built to Last LLC') + dataRow(2, 'MH Built to Last LLC') + dataRow(3, 'MH Built to Last LLC'));
+  const { records } = parsePtrTransactions(html, meta);
+  assert.deepEqual(records.map((r) => r.row_index_in_filing), [0, 1, 2]);
+  assert.deepEqual(records.map((r) => r.source_id.split('|')[1]), ['0', '1', '2']);
+  const t = records.map((r) => normalize(r));
+  const { computeContentHash } = require('../dist/utils/dedup.js');
+  assert.equal(new Set(t.map(computeContentHash)).size, 1, 'content_hash is unchanged: identical rows still hash identically');
+  assert.deepEqual(t.map((x) => x.row_index_in_filing), [0, 1, 2]);
+});
+
+test('row_index_in_filing counts emitted data rows: a skipped non-data row does not leave a gap, and parsing is deterministic', () => {
+  const meta = rowToFilingMeta(ptrRow());
+  const html = tableHtml('<tr><td>#</td><td>Date</td></tr>' + dataRow(1, 'A LLC') + dataRow(2, 'B LLC'));
+  const first = parsePtrTransactions(html, meta).records;
+  const again = parsePtrTransactions(html, meta).records;
+  assert.deepEqual(first.map((r) => r.row_index_in_filing), [0, 1]);
+  assert.deepEqual(first.map((r) => r.source_id), again.map((r) => r.source_id));
+  assert.deepEqual(first.map((r) => r.row_index_in_filing), again.map((r) => r.row_index_in_filing));
 });

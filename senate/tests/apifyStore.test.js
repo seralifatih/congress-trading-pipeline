@@ -48,57 +48,46 @@ function paperPlaceholderRow(overrides = {}) {
   });
 }
 
-// ApifyStore.save() charges the 'transaction' event only for parse_status
-// "ok" rows — a paper-filing placeholder is written to the dataset (still
-// real, useful output) but never charged. Actor.charge() itself no-ops with
-// a warning when the Actor isn't on pay-per-event pricing (true in this
-// local-dev test run), so this test verifies the *count* passed to
-// Actor.charge is correct, not the platform-side billing outcome.
-test('save() charges only for parse_status "ok" rows, not scanned_unparsed placeholders', async () => {
+// Billing model (checked against the Actor's published pricing and apify@3.7.0
+// charging.js): the only priced per-record event is the platform's
+// 'apify-default-dataset-item' ("Transaction record"), billed for EVERY row
+// written to the default dataset — placeholders included. ApifyStore.save()
+// therefore just writes the rows (the push is the charge) and makes no
+// Actor.charge() call; the old call targeted an unregistered 'transaction'
+// event and only logged a warning. Placeholders stay in the default dataset.
+test('save() writes placeholder rows to the default dataset alongside real rows and makes no Actor.charge() call', async () => {
   await Actor.init();
   try {
     const { ApifyStore } = require('../dist/store/apifyStore.js');
     const store = ApifyStore.getInstance();
 
-    let chargedCount = null;
+    let chargeCalls = 0;
     const originalCharge = Actor.charge.bind(Actor);
     Actor.charge = async (opts) => {
-      chargedCount = opts.count;
+      chargeCalls++;
       return originalCharge(opts);
     };
 
+    let result;
     try {
-      await store.save([transactionRow(), paperPlaceholderRow()]);
+      result = await store.save([transactionRow(), paperPlaceholderRow()]);
     } finally {
       Actor.charge = originalCharge;
     }
 
-    assert.equal(chargedCount, 1, 'should charge for exactly the 1 "ok" row, not the placeholder');
+    assert.equal(chargeCalls, 0, 'the dead Actor.charge(transaction) call is gone');
+    assert.deepEqual([result.saved, result.notSaved, result.truncated], [2, 0, false], 'both rows, placeholder included, are written');
   } finally {
     await Actor.exit({ exit: false });
   }
 });
 
-test('save() does not call charge at all when every row is a placeholder', async () => {
+test('save() of only placeholders still writes them (they are not moved out of the default dataset)', async () => {
   await Actor.init();
   try {
     const { ApifyStore } = require('../dist/store/apifyStore.js');
-    const store = ApifyStore.getInstance();
-
-    let chargeCalled = false;
-    const originalCharge = Actor.charge.bind(Actor);
-    Actor.charge = async (opts) => {
-      chargeCalled = true;
-      return originalCharge(opts);
-    };
-
-    try {
-      await store.save([paperPlaceholderRow()]);
-    } finally {
-      Actor.charge = originalCharge;
-    }
-
-    assert.equal(chargeCalled, false, 'charge() should never be called when there are zero billable rows');
+    const result = await ApifyStore.getInstance().save([paperPlaceholderRow()]);
+    assert.equal(result.saved, 1);
   } finally {
     await Actor.exit({ exit: false });
   }

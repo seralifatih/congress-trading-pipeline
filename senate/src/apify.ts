@@ -1,6 +1,8 @@
 import { Actor } from 'apify';
 import { runPipeline } from './scheduler/pipeline.js';
 import { ApifyStore } from './store/apifyStore.js';
+import { parseInput, type ActorInput } from './utils/input.js';
+import { buildRunSummary } from './utils/runSummary.js';
 import { makeLogger } from './utils/logger.js';
 import { toErrorMessage } from './utils/errors.js';
 
@@ -10,17 +12,15 @@ async function main(): Promise<void> {
   await Actor.init();
 
   try {
-    const input = (await Actor.getInput<{
-      fetchDaysBack?: number;
-      fromDate?: string;
-      toDate?: string;
-      debugPtrLimit?: number;
-    }>()) ?? {};
+    const rawInput = (await Actor.getInput<ActorInput>()) ?? {};
+    log.info('Actor input', rawInput);
 
-    log.info('Actor input', input);
-
-    if (input.fetchDaysBack) process.env['FETCH_DAYS_BACK'] = String(input.fetchDaysBack);
-    if (input.debugPtrLimit) process.env['DEBUG_PTR_LIMIT'] = String(input.debugPtrLimit);
+    // Validated and passed to the pipeline explicitly. These used to be
+    // written to process.env here, but that ran AFTER config.ts and
+    // senateFetcher.ts had already read process.env at import time, so
+    // fetchDaysBack and debugPtrLimit were silently ignored (every run used
+    // the 90-day default and no PTR cap).
+    const input = parseInput(rawInput);
 
     // Request proxy from the platform — gives a routable URL usable by axios.
     // Pass a stable sessionId so all requests share the SAME residential exit IP.
@@ -46,6 +46,13 @@ async function main(): Promise<void> {
     const stats = await runPipeline(store, {
       fromDate: input.fromDate,
       toDate: input.toDate,
+      fetchDaysBack: input.fetchDaysBack,
+      debugPtrLimit: input.debugPtrLimit,
+      members: input.members,
+      tickers: input.tickers,
+      transactionDateFrom: input.transactionDateFrom,
+      transactionDateTo: input.transactionDateTo,
+      includeDuplicates: input.includeDuplicates,
     });
 
     log.info('Actor complete', stats);
@@ -68,6 +75,14 @@ async function main(): Promise<void> {
         `Senate EFD may have changed its link format. Examples: ${stats.unknownDocTypeExamples.join(', ')}`,
       );
     }
+    if (stats.truncated) {
+      const message =
+        `TRUNCATED: the run's maximum total charge was reached — ${stats.rowsEmitted} row(s) written, ` +
+        `${stats.rowsNotEmitted} NOT written (oldest filings, last emitted filing date ${stats.lastFilingDate ?? 'n/a'}). ` +
+        `Increase the maximum charge per run to get the full window. See RUN_SUMMARY.`;
+      log.warn(message);
+      await Actor.setStatusMessage(message).catch(() => undefined);
+    }
     // Written to the run's default key-value store under 'OUTPUT' — the
     // standard Apify convention, visible in the console without a separate
     // lookup. Includes electronicPtrCount/paperCount/emptyPtrCount/
@@ -75,6 +90,7 @@ async function main(): Promise<void> {
     // any transient fetch failures, and any new/unrecognized link shape can
     // be read back after any production run.
     await Actor.setValue('OUTPUT', stats);
+    await Actor.setValue('RUN_SUMMARY', buildRunSummary(stats));
   } catch (err) {
     log.error('Actor failed', { error: toErrorMessage(err) });
     await Actor.fail(toErrorMessage(err));

@@ -1,15 +1,32 @@
 import { Actor, Dataset } from 'apify';
-import type { Transaction, QueryFilters, StoreAdapter } from '../types/index.js';
+import type { Transaction, QueryFilters, StoreAdapter, SaveResult } from '../types/index.js';
 import { makeLogger } from '../utils/logger.js';
+import { saveWithinBudget, type BudgetSnapshot } from './budget.js';
 
 const log = makeLogger('apifyStore');
 
-// On pay-per-event pricing (configured on the Actor's Pricing tab in the
-// Apify console — no local pricing file needed), this is the event name that
-// tab must register. Actor.charge() is safe to call even when the Actor is
-// NOT on pay-per-event pricing — it logs a warning once and no-ops rather
-// than throwing — so this call is unconditional, not feature-detected.
-const TRANSACTION_CHARGE_EVENT = 'transaction';
+// Billing: the Actor's only priced per-record event is the platform's
+// 'apify-default-dataset-item' ("Transaction record"), billed for EVERY item
+// written to the default dataset — placeholder rows included (checked against
+// the published pricing and apify@3.7.0 charging.js: "the platform handles
+// them automatically based on dataset writes"). The push is therefore the
+// charge; there is no separate Actor.charge() call (an earlier one targeted an
+// unregistered 'transaction' event and only logged a warning).
+
+function budgetSnapshot(): BudgetSnapshot {
+  const manager = Actor.getChargingManager();
+  const pricing = manager.getPricingInfo();
+  const chargedCounts: Record<string, number> = {};
+  for (const name of Object.keys(pricing.perEventPrices)) {
+    chargedCounts[name] = manager.getChargedEventCount(name);
+  }
+  return {
+    isPayPerEvent: pricing.isPayPerEvent,
+    maxTotalChargeUsd: pricing.maxTotalChargeUsd,
+    perEventPrices: pricing.perEventPrices,
+    chargedCounts,
+  };
+}
 
 // ─── ApifyStore ───────────────────────────────────────────────────────────────
 // Writes transactions to the actor's default Dataset — persisted by Apify
@@ -28,24 +45,26 @@ export class ApifyStore implements StoreAdapter {
     return ApifyStore.instance;
   }
 
-  async save(transactions: Transaction[]): Promise<void> {
-    if (transactions.length === 0) return;
+  async save(transactions: Transaction[]): Promise<SaveResult> {
+    if (transactions.length === 0) return { saved: 0, truncated: false, notSaved: 0 };
     const dataset = await Dataset.open();
-    await dataset.pushData(transactions);
 
-    // Every row is written to the dataset either way — a paper-filing
-    // placeholder is still real, useful output (it tells a consumer the
-    // filing exists and where to find it). But it carries no transaction
-    // data, so only a parse_status "ok" row is a billable result.
-    const billable = transactions.filter((t) => t.parse_status === 'ok').length;
-    if (billable > 0) {
-      await Actor.charge({ eventName: TRANSACTION_CHARGE_EVENT, count: billable });
-    }
+    const result = await saveWithinBudget(transactions, {
+      snapshot: budgetSnapshot,
+      push: (rows) => dataset.pushData(rows),
+    });
 
     log.info(
-      `Pushed ${transactions.length} items to Apify Dataset ` +
-      `(${billable} billed as '${TRANSACTION_CHARGE_EVENT}', ${transactions.length - billable} free placeholder(s))`,
+      `Pushed ${result.saved} items to Apify Dataset (each billed by the platform as a ` +
+      `'Transaction record', placeholders included)`,
     );
+    if (result.truncated) {
+      log.warn(
+        `Max total charge reached — ${result.notSaved} row(s) were NOT written. ` +
+        `Raise the run's maximum charge (or narrow the window/filters) to get them.`,
+      );
+    }
+    return result;
   }
 
   // Apify Dataset has no delete API (append-only, pushData-only) — a stale

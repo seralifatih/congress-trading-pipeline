@@ -1,6 +1,8 @@
 import { Actor } from 'apify';
 import { runPipeline } from './scheduler/pipeline.js';
 import { ApifyStore } from './store/apifyStore.js';
+import { parseInput, toPipelineOptions, type ActorInput } from './utils/input.js';
+import { buildRunSummary } from './utils/runSummary.js';
 import { makeLogger } from './utils/logger.js';
 import { toErrorMessage } from './utils/errors.js';
 
@@ -10,32 +12,27 @@ async function main(): Promise<void> {
   await Actor.init();
 
   try {
-    const input = (await Actor.getInput<{
-      fetchDaysBack?: number;
-      fromDate?: string;
-      toDate?: string;
-      debugPtrLimit?: number;
-      debugPdfText?: boolean;
-      enableOcr?: boolean;
-    }>()) ?? {};
+    const rawInput = (await Actor.getInput<ActorInput>()) ?? {};
 
-    log.info('Actor input', input);
+    log.info('Actor input', rawInput);
 
-    if (input.fetchDaysBack) process.env['FETCH_DAYS_BACK'] = String(input.fetchDaysBack);
-    if (input.debugPtrLimit) process.env['DEBUG_PTR_LIMIT'] = String(input.debugPtrLimit);
-    if (input.debugPdfText)  process.env['DEBUG_PDF_TEXT']  = '1';
-    // OCR prototype, off by default — see config.ts's ENABLE_OCR and
-    // src/ocr/README.md for why.
-    if (input.enableOcr)     process.env['ENABLE_OCR']      = '1';
+    // Validated and passed to the pipeline explicitly. fetchDaysBack,
+    // debugPtrLimit and enableOcr used to be written to process.env here, but
+    // that ran AFTER config.ts had already read process.env at import time,
+    // so they were silently ignored (every run used the 90-day default).
+    const input = parseInput(rawInput);
+
+    // DEBUG_PDF_TEXT is read from process.env at call time inside the parser,
+    // so setting it here still works.
+    if (input.debugPdfText) process.env['DEBUG_PDF_TEXT'] = '1';
 
     // House data comes straight from disclosures-clerk.house.gov over plain HTTPS.
     // No Akamai, no terms acceptance — proxy is optional. Skip it to save quota.
 
     const store = ApifyStore.getInstance();
-    const stats = await runPipeline(store, {
-      fromDate: input.fromDate,
-      toDate: input.toDate,
-    });
+    // OCR prototype, off by default — see config.ts's ENABLE_OCR and
+    // src/ocr/README.md for why.
+    const stats = await runPipeline(store, toPipelineOptions(input));
 
     log.info('Actor complete', stats);
     if (stats.fetchFailedCount > 0) {
@@ -58,12 +55,21 @@ async function main(): Promise<void> {
         `see dataset rows with parse_status="ocr".`,
       );
     }
+    if (stats.truncated) {
+      const message =
+        `TRUNCATED: the run's maximum total charge was reached — ${stats.rowsEmitted} row(s) written, ` +
+        `${stats.rowsNotEmitted} NOT written (oldest filings; last emitted filing date ${stats.lastFilingDate ?? 'n/a'}). ` +
+        `Increase the maximum charge per run to get the full window. See RUN_SUMMARY.`;
+      log.warn(message);
+      await Actor.setStatusMessage(message).catch(() => undefined);
+    }
     // Written to the run's default key-value store under 'OUTPUT' — the
     // standard Apify convention, visible in the console without a separate
     // lookup. Includes fetchFailedCount/parseFailedCount/ocrFilingCount/
     // ocrRowCount so a transient fetch failure, a parser gap, or an OCR
     // recovery surfaces in run stats instead of silently vanishing.
     await Actor.setValue('OUTPUT', stats);
+    await Actor.setValue('RUN_SUMMARY', buildRunSummary(stats));
   } catch (err) {
     log.error('Actor failed', { error: toErrorMessage(err) });
     await Actor.fail(toErrorMessage(err));

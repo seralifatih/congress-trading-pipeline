@@ -128,6 +128,7 @@ function mapRow({ row, member, filingDate, docId, pdfUrl, rowIndex }: MapRowInpu
     // is never actually 'self'-as-a-fallback-guess in a row that shipped.
     owner: row.ownerCode ?? 'self',
     source_id: `house_${docId}_ocr_${rowIndex}`,
+    row_index_in_filing: rowIndex,
     filing_id: docId,
     filing_type: null, // this template has no per-row filing-status comment line
     parse_status: 'ocr',

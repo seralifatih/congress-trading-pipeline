@@ -1,0 +1,25 @@
+{
+  "raw": {
+    "politician": "Ron L Wyden",
+    "transaction_date": "04/30/2025",
+    "filing_date": "08/08/2026",
+    "ticker": "-- AMCR",
+    "asset_name": "BERY - Berry Global Group, Inc. (Exchanged) Amcor plc Ordinary Shares (Received)",
+    "asset_type": "Stock",
+    "type": "Exchange",
+    "amount": "$100,001 - $250,000",
+    "owner": "Spouse",
+    "source_id": "5ecc9b5c-07c1-4ec1-bd4a-2db759eff299|0",
+    "filing_id": "5ecc9b5c-07c1-4ec1-bd4a-2db759eff299",
+    "filing_type": "original",
+    "amendment_number": null,
+    "parse_status": "ok",
+    "pdf_url": null,
+    "raw_json": {}
+  },
+  "emittedByTheOldCode": {
+    "id": "6bd34b842dd56ae8565bb499acf73adee56b4a01d521fd3b7a496cca67a75fdc",
+    "content_hash": "0f8d244314f06cc8a6c9c4676c8038087a17723a860b7aa8b17df6b6fb8ed497",
+    "ticker": "AMCR"
+  }
+}

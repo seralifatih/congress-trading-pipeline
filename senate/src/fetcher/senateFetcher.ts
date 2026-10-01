@@ -461,6 +461,7 @@ export function parsePtrTransactions(html: string, meta: FilingMeta): PtrParseRe
     return { records: [buildParseFailedPlaceholder(meta)], isEmpty: true };
   }
 
+  let rowInFiling = 0;
   rows.each((idx, el) => {
     const cells = $(el).find('td').toArray().map((c) => $(c).text().trim().replace(/\s+/g, ' '));
     if (cells.length < 8) return; // skip non-data rows
@@ -479,6 +480,7 @@ export function parsePtrTransactions(html: string, meta: FilingMeta): PtrParseRe
       amount: amount ?? '',
       owner: owner ?? '',
       source_id: `${meta.doc_id}|${idx}`,
+      row_index_in_filing: rowInFiling++,
       filing_id: meta.doc_id,
       filing_type,
       amendment_number,
@@ -665,6 +667,55 @@ export function collectFilings(
   return { filings, unknownCount };
 }
 
+// ─── Early (pre-detail-fetch) filtering ───────────────────────────────────────
+// The listing carries filer name and filing date only. Both let us skip a
+// filing BEFORE spending a detail-page fetch on it:
+//   - members: the listing name is matched against the user's `members`.
+//   - transactionDateFrom: a PTR can only report trades that already
+//     happened, so every transaction in a filing is dated on or before its
+//     filing date — a filing filed before transactionDateFrom cannot contain
+//     a trade on/after it. (There is no equivalent prune for
+//     transactionDateTo: a filing made today can report a trade from 2024.)
+// Everything else — tickers, the exact transaction-date bounds — needs the
+// detail page and is applied row-by-row in the pipeline.
+
+export interface EarlyFilterOptions {
+  memberMatcher?: (displayName: string) => boolean;
+  transactionDateFrom?: string;
+}
+
+function listingDateToIso(mmddyyyy: string): string | null {
+  const m = mmddyyyy.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!m) return null;
+  return `${m[3]}-${m[1]!.padStart(2, '0')}-${m[2]!.padStart(2, '0')}`;
+}
+
+export function filterFilingsEarly(
+  filings: FilingMeta[],
+  options: EarlyFilterOptions,
+): { kept: FilingMeta[]; skippedByMember: number; skippedByTransactionDate: number } {
+  let skippedByMember = 0;
+  let skippedByTransactionDate = 0;
+  const kept: FilingMeta[] = [];
+
+  for (const f of filings) {
+    if (options.memberMatcher && !options.memberMatcher(f.politician)) {
+      skippedByMember++;
+      continue;
+    }
+    if (options.transactionDateFrom) {
+      const filed = listingDateToIso(f.filing_date);
+      // An unparseable listing date is kept: never drop on missing evidence.
+      if (filed !== null && filed < options.transactionDateFrom) {
+        skippedByTransactionDate++;
+        continue;
+      }
+    }
+    kept.push(f);
+  }
+  return { kept, skippedByMember, skippedByTransactionDate };
+}
+
 async function fetchAllFilings(
   client: AxiosInstance,
   csrf: string,
@@ -821,11 +872,19 @@ export async function fetchPage(
   }
 }
 
+export interface FetchAllOptions extends EarlyFilterOptions {
+  // Overrides the DEBUG_PTR_LIMIT env var. Read per call — the env var is
+  // captured once at module load, which is before the Actor input is known.
+  debugPtrLimit?: number;
+}
+
 export async function fetchAll(
   fromDate: string = isoDefaultStart(),
   toDate: string = isoToday(),
+  options: FetchAllOptions = {},
 ): Promise<FetchResult> {
   log.info(`fetchAll from=${fromDate} to=${toDate}`);
+  const debugPtrLimit = options.debugPtrLimit ?? DEBUG_PTR_LIMIT;
 
   const { client, jar } = createClient();
   let csrf: string;
@@ -865,6 +924,16 @@ export async function fetchAll(
   }
   log.info(`Listing complete: ${listing.filings.length} PTR filings collected`);
 
+  // Phase 1b: drop filings that can't match the user's filters BEFORE any
+  // detail-page fetch (each costs a request + the polite-delay).
+  const early = filterFilingsEarly(listing.filings, options);
+  if (early.skippedByMember > 0 || early.skippedByTransactionDate > 0) {
+    log.info(
+      `Early filters: ${early.kept.length}/${listing.filings.length} filings kept ` +
+      `(skipped ${early.skippedByMember} by members, ${early.skippedByTransactionDate} by transactionDateFrom)`,
+    );
+  }
+
   // Phase 2: fetch each PTR detail page, parse transactions
   const allRecords: RawTransaction[] = [];
   let detailErrors = 0;
@@ -873,11 +942,11 @@ export async function fetchAll(
   let emptyPtrCount = 0;
   let fetchFailedCount = 0;
 
-  const filingsToFetch = DEBUG_PTR_LIMIT > 0
-    ? listing.filings.slice(0, DEBUG_PTR_LIMIT)
-    : listing.filings;
-  if (DEBUG_PTR_LIMIT > 0) {
-    log.warn(`DEBUG_PTR_LIMIT=${DEBUG_PTR_LIMIT} — fetching subset only`);
+  const filingsToFetch = debugPtrLimit > 0
+    ? early.kept.slice(0, debugPtrLimit)
+    : early.kept;
+  if (debugPtrLimit > 0) {
+    log.warn(`debugPtrLimit=${debugPtrLimit} — fetching subset only`);
   }
 
   let activeCsrf = csrf;
@@ -920,24 +989,29 @@ export async function fetchAll(
   }
 
   log.info(
-    `fetchAll complete: ${listing.filings.length} filings → ${allRecords.length} transactions, ` +
+    `fetchAll complete: ${filingsToFetch.length} filings → ${allRecords.length} transactions, ` +
     `${detailErrors} detail errors (electronic=${electronicPtrCount}, paper=${paperCount}, ` +
     `empty=${emptyPtrCount}, fetchFailed=${fetchFailedCount}, unknownDocType=${listing.unknownDocTypeCount})`,
   );
 
   // Partial = listing was incomplete OR ≥25% of detail fetches failed
-  const partialDetail = detailErrors > listing.filings.length / 4;
+  const partialDetail = detailErrors > filingsToFetch.length / 4;
+  const earlyCounts = {
+    skippedByMemberCount: early.skippedByMember,
+    skippedByTransactionDateCount: early.skippedByTransactionDate,
+  };
   if (listing.partial || partialDetail) {
     return {
       success: false,
       records: allRecords,
-      error: listing.error ?? `${detailErrors}/${listing.filings.length} PTR detail fetches failed`,
+      error: listing.error ?? `${detailErrors}/${filingsToFetch.length} PTR detail fetches failed`,
       electronicPtrCount,
       paperCount,
       emptyPtrCount,
       unknownDocTypeCount: listing.unknownDocTypeCount,
       unknownDocTypeExamples: listing.unknownDocTypeExamples,
       fetchFailedCount,
+      ...earlyCounts,
     };
   }
 
@@ -950,6 +1024,7 @@ export async function fetchAll(
     unknownDocTypeCount: listing.unknownDocTypeCount,
     unknownDocTypeExamples: listing.unknownDocTypeExamples,
     fetchFailedCount,
+    ...earlyCounts,
   };
 }
 

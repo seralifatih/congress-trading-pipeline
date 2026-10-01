@@ -14,10 +14,14 @@ const CREATE_TABLE = `
   CREATE TABLE IF NOT EXISTS transactions (
     id              TEXT PRIMARY KEY,
     politician      TEXT NOT NULL,
+    politician_raw  TEXT,
+    member_bioguide_id TEXT,
     transaction_date TEXT,
     filing_date     TEXT NOT NULL,
     ticker          TEXT,
     asset_name      TEXT,
+    received_ticker TEXT,
+    received_asset_name TEXT,
     asset_type      TEXT,
     asset_subtype   TEXT,
     type            TEXT,
@@ -29,6 +33,9 @@ const CREATE_TABLE = `
     content_hash    TEXT NOT NULL,
     filing_type     TEXT,
     amendment_number INTEGER,
+    row_index_in_filing INTEGER,
+    supersedes_filing_id TEXT,
+    is_superseded   INTEGER NOT NULL DEFAULT 0,
     parse_status    TEXT NOT NULL DEFAULT 'ok',
     pdf_url         TEXT,
     fetchedAt       TEXT NOT NULL,
@@ -43,10 +50,14 @@ const CREATE_TABLE = `
 interface TransactionRow {
   id: string;
   politician: string;
+  politician_raw: string | null;
+  member_bioguide_id: string | null;
   transaction_date: string | null;
   filing_date: string;
   ticker: string | null;
   asset_name: string | null;
+  received_ticker: string | null;
+  received_asset_name: string | null;
   asset_type: string | null;
   asset_subtype: string | null;
   type: string | null;
@@ -58,6 +69,9 @@ interface TransactionRow {
   content_hash: string | null;
   filing_type: string | null;
   amendment_number: number | null;
+  row_index_in_filing: number | null;
+  supersedes_filing_id: string | null;
+  is_superseded: number | null;
   parse_status: string;
   pdf_url: string | null;
   fetchedAt: string;
@@ -70,10 +84,14 @@ function rowToTransaction(row: TransactionRow): Transaction {
   return {
     id: row.id,
     politician: row.politician,
+    politician_raw: row.politician_raw ?? row.politician,
+    member_bioguide_id: row.member_bioguide_id ?? null,
     transaction_date: row.transaction_date,
     filing_date: row.filing_date,
     ticker: row.ticker ?? null,
     asset_name: row.asset_name,
+    received_ticker: row.received_ticker ?? null,
+    received_asset_name: row.received_asset_name ?? null,
     asset_type: row.asset_type,
     asset_subtype: row.asset_subtype as Transaction['asset_subtype'],
     type: row.type as Transaction['type'],
@@ -85,6 +103,9 @@ function rowToTransaction(row: TransactionRow): Transaction {
     content_hash: row.content_hash ?? '',
     filing_type: row.filing_type as Transaction['filing_type'],
     amendment_number: row.amendment_number,
+    row_index_in_filing: row.row_index_in_filing ?? null,
+    supersedes_filing_id: row.supersedes_filing_id ?? null,
+    is_superseded: row.is_superseded === 1,
     parse_status: (row.parse_status as Transaction['parse_status']) ?? 'ok',
     pdf_url: row.pdf_url ?? null,
     fetchedAt: row.fetchedAt,
@@ -104,6 +125,8 @@ function rowToTransaction(row: TransactionRow): Transaction {
 const REQUIRED_COLUMNS = [
   'source_id', 'filing_id', 'content_hash', 'filing_type', 'amendment_number', 'asset_subtype',
   'parse_status', 'pdf_url', 'fetchedAt', 'lastModifiedAt', 'revisionCount',
+  'politician_raw', 'member_bioguide_id', 'supersedes_filing_id', 'is_superseded',
+  'received_ticker', 'received_asset_name', 'row_index_in_filing',
 ];
 
 function migrateIfNeeded(db: Database.Database): void {
@@ -159,14 +182,14 @@ export class SqliteStore implements StoreAdapter {
 
     const insert = this.db.prepare(`
       INSERT OR IGNORE INTO transactions
-        (id, politician, transaction_date, filing_date, ticker,
-         asset_name, asset_type, asset_subtype, type, amount_min, amount_max, owner, source_id, filing_id,
-         content_hash, filing_type, amendment_number, parse_status, pdf_url,
+        (id, politician, politician_raw, member_bioguide_id, transaction_date, filing_date, ticker,
+         asset_name, received_ticker, received_asset_name, asset_type, asset_subtype, type, amount_min, amount_max, owner, source_id, filing_id,
+         content_hash, filing_type, amendment_number, row_index_in_filing, supersedes_filing_id, is_superseded, parse_status, pdf_url,
          fetchedAt, lastModifiedAt, revisionCount)
       VALUES
-        (@id, @politician, @transaction_date, @filing_date, @ticker,
-         @asset_name, @asset_type, @asset_subtype, @type, @amount_min, @amount_max, @owner, @source_id, @filing_id,
-         @content_hash, @filing_type, @amendment_number, @parse_status, @pdf_url,
+        (@id, @politician, @politician_raw, @member_bioguide_id, @transaction_date, @filing_date, @ticker,
+         @asset_name, @received_ticker, @received_asset_name, @asset_type, @asset_subtype, @type, @amount_min, @amount_max, @owner, @source_id, @filing_id,
+         @content_hash, @filing_type, @amendment_number, @row_index_in_filing, @supersedes_filing_id, @is_superseded, @parse_status, @pdf_url,
          @fetchedAt, @lastModifiedAt, @revisionCount)
     `);
 
@@ -177,10 +200,14 @@ export class SqliteStore implements StoreAdapter {
         const info = insert.run({
           id,
           politician: t.politician,
+          politician_raw: t.politician_raw ?? null,
+          member_bioguide_id: t.member_bioguide_id ?? null,
           transaction_date: t.transaction_date,
           filing_date: t.filing_date,
           ticker: t.ticker ?? null,
           asset_name: t.asset_name,
+          received_ticker: t.received_ticker ?? null,
+          received_asset_name: t.received_asset_name ?? null,
           asset_type: t.asset_type,
           asset_subtype: t.asset_subtype ?? null,
           type: t.type,
@@ -192,6 +219,9 @@ export class SqliteStore implements StoreAdapter {
           content_hash: t.content_hash,
           filing_type: t.filing_type ?? null,
           amendment_number: t.amendment_number ?? null,
+          row_index_in_filing: t.row_index_in_filing ?? null,
+          supersedes_filing_id: t.supersedes_filing_id ?? null,
+          is_superseded: t.is_superseded ? 1 : 0,
           parse_status: t.parse_status,
           pdf_url: t.pdf_url ?? null,
           fetchedAt: t.fetchedAt,

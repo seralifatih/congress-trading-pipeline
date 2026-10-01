@@ -1,0 +1,12 @@
+[
+  { "id": { "bioguide": "F000472" }, "name": { "first": "C. Scott", "last": "Franklin", "official_full": "Scott Franklin" }, "terms": [{ "type": "rep", "state": "FL" }] },
+  { "id": { "bioguide": "P000197" }, "name": { "first": "Nancy", "last": "Pelosi", "official_full": "Nancy Pelosi" }, "terms": [{ "type": "rep", "state": "CA" }] },
+  { "id": { "bioguide": "F000459" }, "name": { "first": "Charles", "middle": "J.", "nickname": "Chuck", "last": "Fleischmann", "official_full": "Charles J. \"Chuck\" Fleischmann" }, "terms": [{ "type": "rep", "state": "TN" }] },
+  { "id": { "bioguide": "H001082" }, "name": { "first": "Kevin", "last": "Hern", "official_full": "Kevin Hern" }, "terms": [{ "type": "rep", "state": "OK" }] },
+  { "id": { "bioguide": "M001232" }, "name": { "first": "April", "last": "McClain Delaney", "official_full": "April McClain Delaney" }, "terms": [{ "type": "rep", "state": "MD" }] },
+  { "id": { "bioguide": "B001292" }, "name": { "first": "Donald", "middle": "Sternoff", "nickname": "Don", "last": "Beyer", "suffix": "Jr.", "official_full": "Don Beyer" }, "terms": [{ "type": "rep", "state": "VA" }] },
+  { "id": { "bioguide": "D000032" }, "name": { "first": "Byron", "last": "Donalds", "official_full": "Byron Donalds" }, "terms": [{ "type": "rep", "state": "FL" }] },
+  { "id": { "bioguide": "J000001" }, "name": { "first": "Mike", "last": "Johnson", "official_full": "Mike Johnson" }, "terms": [{ "type": "rep", "state": "LA" }] },
+  { "id": { "bioguide": "J000002" }, "name": { "first": "Michael", "last": "Johnson", "official_full": "Michael Johnson" }, "terms": [{ "type": "rep", "state": "OH" }] },
+  { "id": { "bioguide": "T000278" }, "name": { "first": "Tommy", "last": "Tuberville", "official_full": "Tommy Tuberville" }, "terms": [{ "type": "sen", "state": "AL" }] }
+]

@@ -1,6 +1,7 @@
 import { parse as parseDate, isValid, format } from 'date-fns';
 import type { RawTransaction, Transaction } from '../types/index.js';
 import { makeLogger } from '../utils/logger.js';
+import { normalizeNameCase, collapseRepeatedTokens } from '../utils/names.js';
 
 const log = makeLogger('normalize');
 
@@ -116,9 +117,29 @@ function normalizeOwner(raw: string): Transaction['owner'] {
 
 // ─── Ticker normalization ─────────────────────────────────────────────────────
 
+// A blank ticker is "--" or empty; artifacts ("-- AMCR") and company-name
+// abbreviations ("COLPAL") also occur in the source. Cleaning rules, in order:
+//   1. split on whitespace, drop tokens with no letter/digit ("--", "*")
+//   2. trim leading/trailing punctuation from each remaining token
+//   3. exactly one token must remain — several is ambiguous -> null
+//   4. a token whose base (the part before any ".X"/"-X" class suffix) is
+//      longer than 5 characters is not a US ticker (those are 1-5 letters) —
+//      it's a company-name abbreviation -> null, asset_name is kept as-is.
+// Same rules as the Senate actor. Nothing here ever invents a ticker.
+const MAX_TICKER_BASE_LEN = 5;
+
 function normalizeTicker(raw: string): string | null {
-  const t = raw.trim().toUpperCase();
-  if (!t || t === '--' || t === 'N/A' || t === 'NA') return null;
+  const tokens = raw
+    .toUpperCase()
+    .split(/\s+/)
+    .filter((tok) => /[A-Z0-9]/.test(tok))
+    .map((tok) => tok.replace(/^[^A-Z0-9]+|[^A-Z0-9]+$/g, ''));
+  if (tokens.length !== 1) return null;
+
+  const t = tokens[0]!;
+  if (t === 'N/A' || t === 'NA') return null;
+  const base = t.split(/[.\-]/)[0]!;
+  if (base.length > MAX_TICKER_BASE_LEN) return null;
   return t;
 }
 
@@ -154,8 +175,11 @@ function extractTickerFromAssetName(assetName: string): string | null {
   const name = assetName.trim();
   if (!name) return null;
 
-  // Leading "XXXX - Company Name" pattern, e.g. "EA - Electronic Arts Inc"
-  const leadingMatch = name.match(/^([A-Z]{1,5}(?:\.[A-Z])?)\s*-\s*\S/);
+  // Leading "XXXX - Company Name" pattern, e.g. "EA - Electronic Arts Inc".
+  // Whitespace BEFORE the dash is required: a hyphen glued to the word is
+  // part of a hyphenated name, not a delimiter — "ROLLS-ROYCE HOLDINGS PLC
+  // ADR" must not yield the "ticker" ROLLS.
+  const leadingMatch = name.match(/^([A-Z]{1,5}(?:\.[A-Z])?)\s+-\s*\S/);
   if (leadingMatch && isPlausibleTicker(leadingMatch[1]!)) {
     return leadingMatch[1]!;
   }
@@ -203,6 +227,17 @@ function skipReason(raw: RawTransaction, type: 'buy' | 'sell' | 'exchange' | nul
   return null;
 }
 
+// ─── Politician name ──────────────────────────────────────────────────────────
+// The House index is sometimes wrong about a member's name: the 2026 index has
+// <First>Scott Scott</First><Last>Franklin</Last> for Rep. Scott Franklin
+// (and "John John" for another member), which the fetcher joins as "Scott
+// Scott Franklin". The doubled token is in the SOURCE, not a parse bug here;
+// consecutive repeated tokens are collapsed. politician_raw keeps the
+// original string. ALL-CAPS names are re-cased like on the Senate actor.
+function normalizePolitician(raw: string): string {
+  return normalizeNameCase(collapseRepeatedTokens(raw));
+}
+
 // ─── Main export ──────────────────────────────────────────────────────────────
 
 // A 'fetch_failed', 'scanned_unparsed', or 'parse_failed' row is a
@@ -224,9 +259,11 @@ function normalizePlaceholder(
   parse_status: 'fetch_failed' | 'scanned_unparsed' | 'parse_failed',
 ): Transaction {
   return {
-    politician: raw.politician.trim(),
+    politician: normalizePolitician(raw.politician),
+    politician_raw: raw.politician.trim(),
+    member_bioguide_id: null, // filled in by pipeline.ts from the roster
     transaction_date: null,
-    filing_date: raw.filing_date.trim(),
+    filing_date: normalizeDate(raw.filing_date) ?? raw.filing_date.trim(),
     ticker: null,
     asset_name: null,
     asset_type: null,
@@ -240,6 +277,9 @@ function normalizePlaceholder(
     content_hash: '',
     filing_type: raw.filing_type,
     amendment_number: null,
+    row_index_in_filing: 0, // a placeholder is its filing's only row
+    supersedes_filing_id: null,
+    is_superseded: false,
     parse_status,
     pdf_url: raw.pdf_url,
     ocr_confidence: null,
@@ -273,7 +313,9 @@ export function normalize(raw: RawTransaction): Transaction | null {
   const parse_status = raw.parse_status === 'ocr' ? 'ocr' : 'ok';
 
   return {
-    politician: raw.politician.trim(),
+    politician: normalizePolitician(raw.politician),
+    politician_raw: raw.politician.trim(),
+    member_bioguide_id: null, // filled in by pipeline.ts from the roster
     transaction_date: transaction_date ?? filing_date!,
     filing_date: filing_date ?? transaction_date!,
     ticker: normalizeTicker(raw.ticker) ?? extractTickerFromAssetName(raw.asset_name),
@@ -289,6 +331,9 @@ export function normalize(raw: RawTransaction): Transaction | null {
     content_hash: '', // filled in by pipeline.ts alongside id, once amount_min/max etc. are final
     filing_type: raw.filing_type,
     amendment_number: null,
+    row_index_in_filing: raw.row_index_in_filing ?? null,
+    supersedes_filing_id: null, // filled in by pipeline.ts (see utils/dedup.ts collapseCrossFilingDuplicates)
+    is_superseded: false,
     parse_status,
     pdf_url: raw.pdf_url,
     ocr_confidence: parse_status === 'ocr' ? raw.ocr_confidence : null,

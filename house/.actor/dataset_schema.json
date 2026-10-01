@@ -2,24 +2,7 @@
   "actorSpecification": 1,
   "fields": {
     "type": "object",
-    "required": [
-      "politician",
-      "transaction_date",
-      "filing_date",
-      "asset_name",
-      "asset_type",
-      "type",
-      "amount_min",
-      "owner",
-      "id",
-      "source_id",
-      "filing_id",
-      "content_hash",
-      "parse_status",
-      "fetchedAt",
-      "lastModifiedAt",
-      "revisionCount"
-    ],
+    "required": ["politician", "transaction_date", "filing_date", "asset_name", "asset_type", "type", "amount_min", "owner", "id", "source_id", "filing_id", "content_hash", "parse_status", "fetchedAt", "lastModifiedAt", "revisionCount"],
     "properties": {
       "id": {
         "type": "string",
@@ -58,6 +41,24 @@
         "description": "Always null on this actor — schema parity with the Senate actor's \"(Amendment N)\" label, which has no equivalent in the House source (House only exposes a New/Amended flag, not a number).",
         "example": null
       },
+      "row_index_in_filing": {
+        "type": ["integer", "null"],
+        "title": "Row index in filing",
+        "description": "0-based position of this row among its filing's parsed data rows, in source order. Tells apart repeated line items inside one filing (which share a content_hash). Not part of id or content_hash. 0 on a placeholder row (a filing's only row).",
+        "example": 0
+      },
+      "supersedes_filing_id": {
+        "type": ["string", "null"],
+        "title": "Supersedes filing ID",
+        "description": "On an amended filing's rows: the filing_id of the earlier filing by the same filer that it re-lists trades from. The House source has no explicit amends-link, so this is only set where shared identical trades make it determinable; otherwise null.",
+        "example": null
+      },
+      "is_superseded": {
+        "type": ["boolean", "null"],
+        "title": "Is superseded",
+        "description": "True on the surviving rows of a filing that a later amended filing supersedes by the rule described under supersedes_filing_id.",
+        "example": false
+      },
       "parse_status": {
         "type": "string",
         "title": "Parse status",
@@ -92,8 +93,20 @@
       "politician": {
         "type": "string",
         "title": "Politician",
-        "description": "Filer name as it appears on the House disclosure.",
+        "description": "Filer name as the House Clerk index prints it. A doubled token in the source (\"Scott Scott Franklin\") is collapsed (\"Scott Franklin\"); see politician_raw.",
         "example": "Tommy Tuberville"
+      },
+      "politician_raw": {
+        "type": ["string", "null"],
+        "title": "Politician (raw)",
+        "description": "The filer name exactly as the House index printed it (First Last Suffix), before normalization.",
+        "example": "Scott Scott Franklin"
+      },
+      "member_bioguide_id": {
+        "type": ["string", "null"],
+        "title": "Member bioguide ID",
+        "description": "Bioguide id from unitedstates/congress-legislators, resolved from the filer name (same roster approach as the Senate actor). Null when the filer is not a current House member or the name matches more than one — never guessed.",
+        "example": "F000472"
       },
       "transaction_date": {
         "type": ["string", "null"],
@@ -110,7 +123,7 @@
       "ticker": {
         "type": ["string", "null"],
         "title": "Ticker",
-        "description": "Stock ticker. Null for bonds, municipal securities, structured notes, and other non-equity instruments — also null on a placeholder row ('scanned_unparsed' or 'parse_failed').",
+        "description": "Stock ticker as given by the source, cleaned of artifacts. Null when the source omits it (common for government securities/munis, bank notes, private funds and some stocks) or gave a company-name abbreviation instead of a ticker. Never guessed or looked up.",
         "example": "NVDA"
       },
       "asset_name": {
@@ -165,28 +178,43 @@
       "title": "Transaction overview",
       "description": "Compact view — politician, ticker, type, amounts, dates.",
       "transformation": {
-        "fields": [
-          "politician",
-          "transaction_date",
-          "filing_date",
-          "ticker",
-          "type",
-          "amount_min",
-          "amount_max",
-          "owner"
-        ]
+        "fields": ["politician", "transaction_date", "filing_date", "ticker", "type", "amount_min", "amount_max", "owner"]
       },
       "display": {
         "component": "table",
         "properties": {
-          "politician": { "label": "Politician", "format": "text" },
-          "transaction_date": { "label": "Trade date", "format": "date" },
-          "filing_date": { "label": "Filed", "format": "date" },
-          "ticker": { "label": "Ticker", "format": "text" },
-          "type": { "label": "Type", "format": "text" },
-          "amount_min": { "label": "Min $", "format": "number" },
-          "amount_max": { "label": "Max $", "format": "number" },
-          "owner": { "label": "Owner", "format": "text" }
+          "politician": {
+            "label": "Politician",
+            "format": "text"
+          },
+          "transaction_date": {
+            "label": "Trade date",
+            "format": "date"
+          },
+          "filing_date": {
+            "label": "Filed",
+            "format": "date"
+          },
+          "ticker": {
+            "label": "Ticker",
+            "format": "text"
+          },
+          "type": {
+            "label": "Type",
+            "format": "text"
+          },
+          "amount_min": {
+            "label": "Min $",
+            "format": "number"
+          },
+          "amount_max": {
+            "label": "Max $",
+            "format": "number"
+          },
+          "owner": {
+            "label": "Owner",
+            "format": "text"
+          }
         }
       }
     },
@@ -194,15 +222,7 @@
       "title": "Purchases only",
       "description": "Filter to only buy-side transactions.",
       "transformation": {
-        "fields": [
-          "politician",
-          "transaction_date",
-          "ticker",
-          "asset_name",
-          "amount_min",
-          "amount_max",
-          "owner"
-        ],
+        "fields": ["politician", "transaction_date", "ticker", "asset_name", "amount_min", "amount_max", "owner"],
         "filter": {
           "type": "buy"
         }
@@ -215,30 +235,7 @@
       "title": "Full record",
       "description": "All fields including asset_name, asset_type, id, source_id, content_hash, and filing_type.",
       "transformation": {
-        "fields": [
-          "id",
-          "politician",
-          "transaction_date",
-          "filing_date",
-          "ticker",
-          "asset_name",
-          "asset_type",
-          "asset_subtype",
-          "type",
-          "amount_min",
-          "amount_max",
-          "owner",
-          "source_id",
-          "filing_id",
-          "content_hash",
-          "filing_type",
-          "amendment_number",
-          "parse_status",
-          "pdf_url",
-          "fetchedAt",
-          "lastModifiedAt",
-          "revisionCount"
-        ]
+        "fields": ["id", "politician", "politician_raw", "member_bioguide_id", "transaction_date", "filing_date", "ticker", "asset_name", "asset_type", "asset_subtype", "type", "amount_min", "amount_max", "owner", "source_id", "filing_id", "content_hash", "filing_type", "amendment_number", "row_index_in_filing", "supersedes_filing_id", "is_superseded", "parse_status", "pdf_url", "fetchedAt", "lastModifiedAt", "revisionCount"]
       },
       "display": {
         "component": "table"

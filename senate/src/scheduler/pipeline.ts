@@ -1,9 +1,11 @@
-import { format, subDays } from 'date-fns';
 import { fetchAll } from '../fetcher/senateFetcher.js';
 import { parseHtml } from '../parser/index.js';
 import { normalizeAll } from '../transformer/normalize.js';
 import { SqliteStore } from '../store/sqliteStore.js';
-import { dedup, generateId, computeContentHash, latestBySourceId, placeholdersByFilingId } from '../utils/dedup.js';
+import { dedup, generateId, computeContentHash, latestBySourceId, placeholdersByFilingId, collapseCrossFilingDuplicates } from '../utils/dedup.js';
+import { buildMemberMatcher, loadSenateResolver, type NameResolver } from '../utils/legislators.js';
+import { normalizeTickerFilterValue } from '../utils/input.js';
+import { resolveWindow } from '../utils/window.js';
 import { makeLogger } from '../utils/logger.js';
 import { toErrorMessage } from '../utils/errors.js';
 import { config } from '../utils/config.js';
@@ -31,11 +33,118 @@ export interface PipelineStats {
   // network/host failure shows up in run stats instead of the filing
   // silently vanishing.
   fetchFailedCount: number;
+  // ── Filters, dedup and the charge cap ─────────────────────────────────────
+  // The filing-date window actually used (inclusive, YYYY-MM-DD).
+  windowFrom: string;
+  windowTo: string;
+  // Filings skipped before their detail page was fetched (members /
+  // transactionDateFrom inputs).
+  skippedByMemberCount: number;
+  skippedByTransactionDateCount: number;
+  // Rows removed after parsing, before anything is written or charged.
+  filteredByTickerCount: number;
+  filteredByTransactionDateCount: number;
+  // Placeholder rows (content unknown) withheld because a tickers /
+  // transaction-date filter is active and can't be evaluated on them.
+  placeholdersExcludedCount: number;
+  // Exact cross-filing duplicates removed (same content_hash, different filing).
+  duplicatesRemoved: number;
+  supersessionsFound: number;
+  // True when the run's max total charge stopped the dataset write short.
+  truncated: boolean;
+  truncationReason?: 'max_total_charge_reached';
+  // Rows actually written to the dataset (== inserted) and rows left out.
+  rowsEmitted: number;
+  rowsNotEmitted: number;
+  // filing_date / filing_id of the last row written. Rows are written
+  // newest-filing-first, so on truncation this is the oldest filing reached.
+  lastFilingDate: string | null;
+  lastFilingId: string | null;
 }
 
 export interface PipelineOptions {
   fromDate?: string;
   toDate?: string;
+  // Rolling window length, used only when fromDate is not set. Falls back to
+  // the FETCH_DAYS_BACK env var (default 90).
+  fetchDaysBack?: number;
+  debugPtrLimit?: number;
+  // Case-insensitive; matched against normalized names AND nicknames.
+  members?: string[];
+  tickers?: string[];
+  transactionDateFrom?: string;
+  transactionDateTo?: string;
+  // Keep exact cross-filing duplicates instead of removing them.
+  includeDuplicates?: boolean;
+  // Test seam: undefined -> load the Senate roster from congress-legislators;
+  // null -> no roster (bioguide ids stay null).
+  resolver?: NameResolver | null;
+}
+
+function emptyStats(window: { fromDate: string; toDate: string }): PipelineStats {
+  return {
+    inserted: 0, skipped: 0, errors: 0,
+    electronicPtrCount: 0, paperCount: 0, emptyPtrCount: 0,
+    unknownDocTypeCount: 0, unknownDocTypeExamples: [], fetchFailedCount: 0,
+    windowFrom: window.fromDate, windowTo: window.toDate,
+    skippedByMemberCount: 0, skippedByTransactionDateCount: 0,
+    filteredByTickerCount: 0, filteredByTransactionDateCount: 0,
+    placeholdersExcludedCount: 0,
+    duplicatesRemoved: 0, supersessionsFound: 0,
+    truncated: false, rowsEmitted: 0, rowsNotEmitted: 0,
+    lastFilingDate: null, lastFilingId: null,
+  };
+}
+
+// ─── Row filters (tickers / transaction date) ─────────────────────────────────
+// Applied to normalized rows, always before anything is saved or charged.
+// Exported for unit tests.
+
+export interface RowFilterOptions {
+  tickers: string[];
+  transactionDateFrom?: string;
+  transactionDateTo?: string;
+}
+
+export interface RowFilterResult {
+  kept: Transaction[];
+  filteredByTicker: number;
+  filteredByTransactionDate: number;
+  placeholdersExcluded: number;
+}
+
+export function filterRows(rows: Transaction[], options: RowFilterOptions): RowFilterResult {
+  const tickerSet = new Set(options.tickers.map(normalizeTickerFilterValue));
+  const active = tickerSet.size > 0 || !!options.transactionDateFrom || !!options.transactionDateTo;
+  if (!active) return { kept: rows, filteredByTicker: 0, filteredByTransactionDate: 0, placeholdersExcluded: 0 };
+
+  const kept: Transaction[] = [];
+  let filteredByTicker = 0;
+  let filteredByTransactionDate = 0;
+  let placeholdersExcluded = 0;
+
+  for (const t of rows) {
+    // A placeholder carries no ticker or transaction date, so these filters
+    // can't be evaluated on it. Excluded rather than guessed at.
+    if (t.parse_status !== 'ok') {
+      placeholdersExcluded++;
+      continue;
+    }
+    const d = t.transaction_date;
+    if (
+      (options.transactionDateFrom && (d === null || d < options.transactionDateFrom)) ||
+      (options.transactionDateTo && (d === null || d > options.transactionDateTo))
+    ) {
+      filteredByTransactionDate++;
+      continue;
+    }
+    if (tickerSet.size > 0 && !(t.ticker !== null && tickerSet.has(normalizeTickerFilterValue(t.ticker)))) {
+      filteredByTicker++;
+      continue;
+    }
+    kept.push(t);
+  }
+  return { kept, filteredByTicker, filteredByTransactionDate, placeholdersExcluded };
 }
 
 export async function runPipeline(
@@ -44,12 +153,37 @@ export async function runPipeline(
 ): Promise<PipelineStats> {
   log.info('Pipeline start');
 
-  const fromDate = options.fromDate ?? format(subDays(new Date(), config.FETCH_DAYS_BACK), 'yyyy-MM-dd');
-  const toDate   = options.toDate   ?? format(new Date(), 'yyyy-MM-dd');
+  const window = resolveWindow(options, config.FETCH_DAYS_BACK);
+  const { fromDate, toDate } = window;
+  const stats = emptyStats(window);
+  const members = options.members ?? [];
+  const tickers = options.tickers ?? [];
+  log.info(`Window (filing date): ${fromDate} .. ${toDate}`);
+
+  if (options.transactionDateFrom && options.transactionDateFrom < fromDate) {
+    log.warn(
+      `transactionDateFrom=${options.transactionDateFrom} is earlier than the filing-date window start ` +
+      `${fromDate}. The window selects filings by FILING date, so a trade from before ${fromDate} is only ` +
+      `returned if it was reported in a filing submitted on/after ${fromDate}. Widen fetchDaysBack/fromDate ` +
+      `to catch trades that were filed earlier.`,
+    );
+  }
+
+  const resolver = options.resolver === undefined ? await loadSenateResolver() : options.resolver;
+  const memberMatcher = members.length > 0 ? buildMemberMatcher(members, resolver) : undefined;
 
   // ── Step 1: Fetch ────────────────────────────────────────────────────────────
-  const fetchResult = await fetchAll(fromDate, toDate);
+  const fetchResult = await fetchAll(fromDate, toDate, {
+    debugPtrLimit: options.debugPtrLimit,
+    memberMatcher,
+    transactionDateFrom: options.transactionDateFrom,
+  });
   const { electronicPtrCount, paperCount, emptyPtrCount, unknownDocTypeCount, unknownDocTypeExamples, fetchFailedCount } = fetchResult;
+  Object.assign(stats, {
+    electronicPtrCount, paperCount, emptyPtrCount, unknownDocTypeCount, unknownDocTypeExamples, fetchFailedCount,
+    skippedByMemberCount: fetchResult.skippedByMemberCount ?? 0,
+    skippedByTransactionDateCount: fetchResult.skippedByTransactionDateCount ?? 0,
+  });
   log.info(
     `Filing formats: electronic=${electronicPtrCount}, paper=${paperCount}, ` +
     `empty=${emptyPtrCount}, fetchFailed=${fetchFailedCount}, unknownDocType=${unknownDocTypeCount}`,
@@ -60,10 +194,7 @@ export async function runPipeline(
 
   if (!fetchResult.success && fetchResult.records.length === 0) {
     log.error(`Fetch failed with no records: ${fetchResult.error}`);
-    return {
-      inserted: 0, skipped: 0, errors: 1,
-      electronicPtrCount, paperCount, emptyPtrCount, unknownDocTypeCount, unknownDocTypeExamples, fetchFailedCount,
-    };
+    return { ...stats, errors: 1 };
   }
 
   if (!fetchResult.success) {
@@ -97,16 +228,51 @@ export async function runPipeline(
   }
 
   // ── Step 3: Normalize ────────────────────────────────────────────────────────
-  const normalized = normalizeAll(parsedRecords);
-  const skipped = parsedRecords.length - normalized.length;
-  log.info(`Normalized: ${normalized.length} valid, ${skipped} skipped`);
+  const normalizedAll = normalizeAll(parsedRecords);
+  const skipped = parsedRecords.length - normalizedAll.length;
+  stats.skipped = skipped;
+  log.info(`Normalized: ${normalizedAll.length} valid, ${skipped} skipped`);
+
+  // Bioguide ids, from the roster — null when the name doesn't resolve to
+  // exactly one current senator (or the roster couldn't be loaded).
+  const bioguideByName = new Map<string, string | null>();
+  for (const t of normalizedAll) {
+    const key = t.politician_raw ?? t.politician;
+    if (!bioguideByName.has(key)) bioguideByName.set(key, resolver?.resolve(key) ?? null);
+    t.member_bioguide_id = bioguideByName.get(key) ?? null;
+  }
+
+  // ── Step 3b: Row filters — before dedup, before anything is saved/charged ───
+  const rowFilter = filterRows(normalizedAll, {
+    tickers,
+    transactionDateFrom: options.transactionDateFrom,
+    transactionDateTo: options.transactionDateTo,
+  });
+  stats.filteredByTickerCount = rowFilter.filteredByTicker;
+  stats.filteredByTransactionDateCount = rowFilter.filteredByTransactionDate;
+  stats.placeholdersExcludedCount = rowFilter.placeholdersExcluded;
+  if (rowFilter.kept.length !== normalizedAll.length) {
+    log.info(
+      `Row filters: ${rowFilter.kept.length}/${normalizedAll.length} rows kept ` +
+      `(${rowFilter.filteredByTicker} by tickers, ${rowFilter.filteredByTransactionDate} by transaction date, ` +
+      `${rowFilter.placeholdersExcluded} placeholder(s) withheld)`,
+    );
+  }
+
+  // ── Step 3c: Cross-filing duplicates / supersession ─────────────────────────
+  const collapsed = collapseCrossFilingDuplicates(rowFilter.kept, {
+    dropDuplicates: options.includeDuplicates !== true,
+  });
+  stats.duplicatesRemoved = collapsed.duplicatesRemoved;
+  stats.supersessionsFound = collapsed.supersessionsFound;
+  if (collapsed.duplicatesRemoved > 0) {
+    log.info(`Removed ${collapsed.duplicatesRemoved} exact cross-filing duplicate row(s) (amendment copy kept)`);
+  }
+  const normalized = collapsed.rows;
 
   if (normalized.length === 0) {
-    log.warn('No valid records after normalization — nothing to store');
-    return {
-      inserted: 0, skipped, errors: 0,
-      electronicPtrCount, paperCount, emptyPtrCount, unknownDocTypeCount, unknownDocTypeExamples, fetchFailedCount,
-    };
+    log.warn('No valid records after normalization/filters — nothing to store');
+    return stats;
   }
 
   // ── Step 4: Load existing for dedup ─────────────────────────────────────────
@@ -162,10 +328,7 @@ export async function runPipeline(
   log.info(`Dedup: ${netNew.length} net-new (${filtered.length - netNew.length} already stored)`);
 
   if (netNew.length === 0) {
-    return {
-      inserted: 0, skipped, errors: 0,
-      electronicPtrCount, paperCount, emptyPtrCount, unknownDocTypeCount, unknownDocTypeExamples, fetchFailedCount,
-    };
+    return stats;
   }
 
   // ── Step 6: Assign IDs, fetch/revision metadata, and save ───────────────────
@@ -225,9 +388,16 @@ export async function runPipeline(
   }
 
   let errors = 0;
+  let emitted = 0;
   try {
-    await store.save(withIds);
-    log.info(`Saved ${withIds.length} transactions`);
+    const saveResult = await store.save(withIds);
+    emitted = saveResult?.saved ?? withIds.length;
+    if (saveResult?.truncated) {
+      stats.truncated = true;
+      stats.truncationReason = saveResult.reason ?? 'max_total_charge_reached';
+      stats.rowsNotEmitted = saveResult.notSaved;
+    }
+    log.info(`Saved ${emitted} transactions`);
   } catch (err) {
     log.error(`Store save failed: ${toErrorMessage(err)}`);
     errors = 1;
@@ -245,8 +415,13 @@ export async function runPipeline(
     }
   }
 
+  const last = emitted > 0 ? withIds[emitted - 1]! : null;
   return {
-    inserted: withIds.length, skipped, errors,
-    electronicPtrCount, paperCount, emptyPtrCount, unknownDocTypeCount, unknownDocTypeExamples, fetchFailedCount,
+    ...stats,
+    inserted: emitted,
+    errors,
+    rowsEmitted: emitted,
+    lastFilingDate: last?.filing_date ?? null,
+    lastFilingId: last?.filing_id ?? null,
   };
 }

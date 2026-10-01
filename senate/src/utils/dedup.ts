@@ -57,6 +57,130 @@ export function computeContentHash(t: Transaction): string {
   return createHash('sha256').update(key).digest('hex');
 }
 
+// ─── Cross-filing duplicate collapse ──────────────────────────────────────────
+// The same real-world trade is routinely reported in more than one filing —
+// an original PTR and the amendment that re-lists it, or two amendments that
+// both carry the full table. Within a run's batch, rows with the same
+// content_hash that come from DIFFERENT filings (filing_id) are exact
+// duplicates: one copy is kept, the rest dropped. Which copy survives is the
+// one from the highest-ranked filing — higher amendment_number first, then
+// later filing_date, then earlier position in the batch (the listing is
+// newest-first). An amendment's copy therefore always beats the original's;
+// an amendment's rows are never the ones removed.
+//
+// Rows sharing a content_hash WITHIN one filing are left alone: a single PTR
+// can legitimately list several identical tranches (see computeContentHash).
+//
+// Supersession is annotated only where the data itself shows it — the source
+// has no "amends filing X" link. A surviving amendment row is stamped
+// supersedes_filing_id = the lower-ranked filing it shares the most identical
+// trades with; that lower-ranked filing's remaining rows get is_superseded.
+// Anything without shared trades stays null/false: not determinable.
+
+export interface CollapseResult {
+  rows: Transaction[];
+  duplicatesRemoved: number;
+  supersessionsFound: number;
+}
+
+interface FilingRank {
+  filing_id: string;
+  filing_type: Transaction['filing_type'];
+  amendment: number; // 0 for originals and unlabeled filings
+  filing_date: string;
+  firstIndex: number;
+}
+
+// > 0 when a outranks b.
+function compareRank(a: FilingRank, b: FilingRank): number {
+  if (a.amendment !== b.amendment) return a.amendment - b.amendment;
+  if (a.filing_date !== b.filing_date) return a.filing_date > b.filing_date ? 1 : -1;
+  return b.firstIndex - a.firstIndex;
+}
+
+export function collapseCrossFilingDuplicates(
+  rows: Transaction[],
+  options: { dropDuplicates: boolean } = { dropDuplicates: true },
+): CollapseResult {
+  const ranks = new Map<string, FilingRank>(); // key: filerKey|filing_id
+  const groups = new Map<string, Map<string, number[]>>(); // filerKey|hash -> filing key -> row indices
+  const filerKeyOf = (t: Transaction) => t.politician.toLowerCase().replace(/[^a-z]+/g, ' ').trim();
+
+  rows.forEach((t, i) => {
+    if (t.parse_status !== 'ok') return;
+    const fk = `${filerKeyOf(t)}|${t.filing_id}`;
+    if (!ranks.has(fk)) {
+      ranks.set(fk, {
+        filing_id: t.filing_id,
+        filing_type: t.filing_type,
+        amendment: t.filing_type === 'amendment' ? (t.amendment_number ?? 1) : 0,
+        filing_date: t.filing_date,
+        firstIndex: i,
+      });
+    }
+    const gk = `${filerKeyOf(t)}|${computeContentHash(t)}`;
+    const byFiling = groups.get(gk) ?? new Map<string, number[]>();
+    const idxs = byFiling.get(fk) ?? [];
+    idxs.push(i);
+    byFiling.set(fk, idxs);
+    groups.set(gk, byFiling);
+  });
+
+  const dropped = new Set<number>();
+  // winner filing key -> (loser filing key -> shared hash count), only for
+  // pairs where the winner is a strictly later amendment.
+  const supersedes = new Map<string, Map<string, number>>();
+  const supersededFilings = new Set<string>();
+
+  for (const byFiling of groups.values()) {
+    if (byFiling.size < 2) continue;
+    const filingKeys = [...byFiling.keys()];
+    const winnerKey = filingKeys.reduce((best, k) =>
+      compareRank(ranks.get(k)!, ranks.get(best)!) > 0 ? k : best,
+    );
+    const winner = ranks.get(winnerKey)!;
+
+    for (const k of filingKeys) {
+      if (k === winnerKey) continue;
+      const loser = ranks.get(k)!;
+      if (options.dropDuplicates) for (const idx of byFiling.get(k)!) dropped.add(idx);
+      if (winner.filing_type === 'amendment' && winner.amendment > loser.amendment) {
+        const m = supersedes.get(winnerKey) ?? new Map<string, number>();
+        m.set(k, (m.get(k) ?? 0) + 1);
+        supersedes.set(winnerKey, m);
+        supersededFilings.add(k);
+      }
+    }
+  }
+
+  const supersedesId = new Map<string, string>(); // winner filing key -> loser filing_id
+  for (const [winnerKey, losers] of supersedes) {
+    const best = [...losers.entries()].sort(
+      (a, b) => b[1] - a[1] || compareRank(ranks.get(b[0])!, ranks.get(a[0])!),
+    )[0]!;
+    supersedesId.set(winnerKey, ranks.get(best[0])!.filing_id);
+  }
+
+  const out: Transaction[] = [];
+  rows.forEach((t, i) => {
+    if (dropped.has(i)) return;
+    if (t.parse_status !== 'ok') {
+      out.push(t);
+      return;
+    }
+    const fk = `${filerKeyOf(t)}|${t.filing_id}`;
+    const sup = supersedesId.get(fk) ?? null;
+    const isSuperseded = supersededFilings.has(fk);
+    out.push(sup === null && !isSuperseded ? t : { ...t, supersedes_filing_id: sup, is_superseded: isSuperseded });
+  });
+
+  return {
+    rows: out,
+    duplicatesRemoved: dropped.size,
+    supersessionsFound: supersedesId.size,
+  };
+}
+
 // ─── Deduplication ────────────────────────────────────────────────────────────
 
 export function dedup(incoming: Transaction[], existing: Transaction[]): Transaction[] {

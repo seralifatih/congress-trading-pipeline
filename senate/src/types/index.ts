@@ -28,6 +28,9 @@ export interface RawTransaction {
   // Never inferred from duplicate documents/rows.
   filing_type: 'original' | 'amendment' | null;
   amendment_number: number | null;
+  // 0-based position of this row among the filing's parsed data rows, in
+  // source order. Absent on rows from parsers that don't set it.
+  row_index_in_filing?: number;
   // 'ok' unless this row is a placeholder — see fetcher/senateFetcher.ts:
   //   'fetch_failed'     — the PTR detail-page fetch itself failed after
   //     retries (network error, timeout, non-2xx, or a home-page redirect
@@ -58,11 +61,27 @@ export interface RawTransaction {
 export const TransactionSchema = z.object({
   id: z.string().optional(), // sha256 hex digest, not a UUID — see utils/dedup.ts
   politician: z.string().min(1),
+  // The filer name exactly as the Senate listing printed it, before any
+  // casing normalization (paper filings arrive ALL CAPS). Optional so rows
+  // written by older versions still validate.
+  politician_raw: z.string().optional(),
+  // unitedstates/congress-legislators bioguide id, resolved from the
+  // listing name. Null when the filer isn't a current senator or the name is
+  // ambiguous — never guessed.
+  member_bioguide_id: z.string().nullable().optional(),
   // Null only on a 'scanned_unparsed' placeholder row — see parse_status.
   transaction_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD').nullable(),
   filing_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD'),
+  // For an Exchange row this is the GIVEN asset's ticker (the one asset_name
+  // leads with); the asset received in exchange is in received_ticker.
   ticker: z.string().nullable(),
   asset_name: z.string().min(1).nullable(),
+  // Exchange rows only (null otherwise): the asset received. The source prints
+  // one asset_name "<given> (Exchanged) <received> (Received)" and a ticker
+  // cell that can carry both tickers ("-- AMCR" = no given ticker, received
+  // AMCR). received_asset_name is null when the "(Exchanged)" marker is missing.
+  received_ticker: z.string().nullable().optional(),
+  received_asset_name: z.string().nullable().optional(),
   asset_type: z.string().min(1).nullable(),
   // Derived, not sourced: Senate's own asset_type checkbox set has no ETF/Fund
   // option, so filers commonly mark those as "Stock". Only set when asset_type
@@ -98,6 +117,19 @@ export const TransactionSchema = z.object({
   filing_type: z.enum(['original', 'amendment']).nullable(),
   // Senate only: the N in "(Amendment N)". No equivalent exists on House.
   amendment_number: z.number().int().positive().nullable().optional(),
+  // Set on an amendment's rows when an earlier filing by the same filer
+  // shares at least one identical trade with it (same content_hash) — the
+  // only evidence of supersession the source exposes, since it carries no
+  // explicit link. The id of that earlier filing; null when not determinable.
+  // 0-based position of the row among its filing's parsed data rows, in source
+  // order — tells apart identical rows inside one filing. Not part of id or
+  // content_hash. 0 on a placeholder (a filing's only row). Null when the
+  // parser couldn't provide it.
+  row_index_in_filing: z.number().int().nonnegative().nullable().optional(),
+  supersedes_filing_id: z.string().nullable().optional(),
+  // True on the surviving rows of a filing that a later amendment supersedes
+  // by the rule above. False otherwise.
+  is_superseded: z.boolean().optional(),
   // 'fetch_failed': the PTR detail-page fetch itself failed after retries —
   // content was never examined. Transient: pipeline.ts supersedes this
   // placeholder with real rows the moment a later run's fetch succeeds for
@@ -173,6 +205,11 @@ export interface FetchResult {
   unknownDocTypeCount: number;
   unknownDocTypeExamples: string[];
   fetchFailedCount: number;
+  // Filings skipped before their detail page was fetched because they could
+  // not match the `members` / `transactionDateFrom` inputs. Absent when no
+  // such filter was set.
+  skippedByMemberCount?: number;
+  skippedByTransactionDateCount?: number;
 }
 
 // ─── Query filters for the store / API layer ─────────────────────────────────
@@ -191,8 +228,19 @@ export interface QueryFilters {
 
 // ─── Storage adapter interface ────────────────────────────────────────────────
 
+// Returned by a store whose save() can stop short — ApifyStore, when the
+// run's max total charge is reached. A store with no cap (SqliteStore) may
+// return void; the pipeline then treats everything as saved.
+export interface SaveResult {
+  saved: number;
+  truncated: boolean;
+  reason?: 'max_total_charge_reached';
+  // Rows handed to save() that were NOT written because of the cap.
+  notSaved: number;
+}
+
 export interface StoreAdapter {
-  save(transactions: Transaction[]): Promise<void>;
+  save(transactions: Transaction[]): Promise<SaveResult | void>;
   query(filters?: QueryFilters): Promise<Transaction[]>;
   // Removes stale placeholder rows for the given filing_ids — called by
   // pipeline.ts's supersede step when a filing that previously produced a

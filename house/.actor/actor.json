@@ -3,7 +3,7 @@
   "name": "house-trading-pipeline",
   "title": "U.S. House Trading Pipeline",
   "description": "Fetches U.S. House Periodic Transaction Reports from the official disclosures-clerk.house.gov ZIP archive, parses the per-filing PDFs, and emits a clean transaction dataset. Public domain data, no third-party vendors.",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "buildTag": "latest",
   "dockerfile": "../Dockerfile",
   "input": {
@@ -15,7 +15,7 @@
       "fetchDaysBack": {
         "title": "Days back to fetch",
         "type": "integer",
-        "description": "Rolling window of PTRs to fetch (default 90).",
+        "description": "Rolling window of PTRs to fetch (default 90). The window is applied to the FILING date (the date the PTR was filed with the House Clerk), not to the trade date inside it — trade dates in the output routinely reach back well before the window start.",
         "default": 90,
         "minimum": 1,
         "maximum": 365,
@@ -24,21 +24,21 @@
       "fromDate": {
         "title": "From date (YYYY-MM-DD)",
         "type": "string",
-        "description": "Explicit start date. Overrides fetchDaysBack if set.",
+        "description": "Explicit start of the filing-date window. Overrides fetchDaysBack if set.",
         "editor": "textfield",
         "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
       },
       "toDate": {
         "title": "To date (YYYY-MM-DD)",
         "type": "string",
-        "description": "Explicit end date. Defaults to today.",
+        "description": "Explicit end of the filing-date window. Defaults to today.",
         "editor": "textfield",
         "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
       },
       "debugPtrLimit": {
         "title": "Debug: limit PTR detail fetches",
         "type": "integer",
-        "description": "If > 0, fetch only the first N PTRs.",
+        "description": "If > 0, fetch only the first N PTRs (newest filings first, after the members filter). Useful for diagnostics and cheap test runs.",
         "default": 0,
         "minimum": 0,
         "editor": "number"
@@ -48,6 +48,39 @@
         "type": "boolean",
         "description": "Logs raw extracted text for any PDF where regex finds zero rows.",
         "default": false
+      },
+      "members": {
+        "title": "Members (names)",
+        "type": "array",
+        "description": "Optional. Only return filings by these House members. Case-insensitive; matches the normalized name and common nicknames, so \"Chuck Fleischmann\" matches \"Charles J. \\\"Chuck\\\" Fleischmann\". A bioguide id (e.g. P000197) also works, and a bare last name matches every member with that last name. Applied to the PTR index before any PDF is downloaded, so excluded members' PDFs are never fetched, parsed or charged.",
+        "editor": "stringList"
+      },
+      "tickers": {
+        "title": "Tickers",
+        "type": "array",
+        "description": "Optional. Only return transactions in these tickers (case-insensitive, e.g. AAPL, BRK.B). Rows with no ticker are excluded when this is set, and so are placeholder rows (their content is unknown). Applied before rows are written or charged.",
+        "editor": "stringList"
+      },
+      "transactionDateFrom": {
+        "title": "Transaction date from (YYYY-MM-DD)",
+        "type": "string",
+        "description": "Optional. Only return transactions executed on or after this date. Applied on top of the filing-date window: a trade is only returned if its filing falls inside the window too. Filings filed before this date are skipped without downloading their PDF.",
+        "editor": "textfield",
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+      },
+      "transactionDateTo": {
+        "title": "Transaction date to (YYYY-MM-DD)",
+        "type": "string",
+        "description": "Optional. Only return transactions executed on or before this date. Applied on top of the filing-date window.",
+        "editor": "textfield",
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+      },
+      "includeDuplicates": {
+        "title": "Keep exact duplicate rows",
+        "type": "boolean",
+        "description": "By default, a trade that appears identically in more than one filing (e.g. an original PTR and the amended filing that re-lists it) is returned once, from the amended filing. Identical rows within one filing, and rows that differ in owner, are never touched. Set to true to keep every copy; supersedes_filing_id / is_superseded are still set.",
+        "default": false,
+        "editor": "checkbox"
       }
     }
   },

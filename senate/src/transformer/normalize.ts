@@ -1,6 +1,7 @@
 import { parse as parseDate, isValid, format } from 'date-fns';
 import type { RawTransaction, Transaction } from '../types/index.js';
 import { makeLogger } from '../utils/logger.js';
+import { normalizeNameCase } from '../utils/names.js';
 
 const log = makeLogger('normalize');
 
@@ -117,9 +118,30 @@ function normalizeOwner(raw: string): Transaction['owner'] {
 
 // ─── Ticker normalization ─────────────────────────────────────────────────────
 
+// The source's ticker cell is "--" when blank, and occasionally carries
+// artifacts ("-- AMCR" on an exchange row) or a company-name abbreviation
+// instead of a ticker ("COLPAL"). Cleaning rules, in order:
+//   1. split on whitespace, drop tokens with no letter/digit ("--", "*")
+//   2. trim leading/trailing punctuation from each remaining token
+//   3. exactly one token must remain — several is ambiguous -> null
+//   4. a token whose base (the part before any ".X"/"-X" class suffix) is
+//      longer than 5 characters is not a US ticker (those are 1-5 letters) —
+//      it's a company-name abbreviation -> null, asset_name is kept as-is.
+// Nothing here ever invents a ticker.
+const MAX_TICKER_BASE_LEN = 5;
+
 function normalizeTicker(raw: string): string | null {
-  const t = raw.trim().toUpperCase();
-  if (!t || t === '--' || t === 'N/A' || t === 'NA') return null;
+  const tokens = raw
+    .toUpperCase()
+    .split(/\s+/)
+    .filter((tok) => /[A-Z0-9]/.test(tok))
+    .map((tok) => tok.replace(/^[^A-Z0-9]+|[^A-Z0-9]+$/g, ''));
+  if (tokens.length !== 1) return null;
+
+  const t = tokens[0]!;
+  if (t === 'N/A' || t === 'NA') return null;
+  const base = t.split(/[.\-]/)[0]!;
+  if (base.length > MAX_TICKER_BASE_LEN) return null;
   return t;
 }
 
@@ -155,8 +177,11 @@ function extractTickerFromAssetName(assetName: string): string | null {
   const name = assetName.trim();
   if (!name) return null;
 
-  // Leading "XXXX - Company Name" pattern, e.g. "EA - Electronic Arts Inc"
-  const leadingMatch = name.match(/^([A-Z]{1,5}(?:\.[A-Z])?)\s*-\s*\S/);
+  // Leading "XXXX - Company Name" pattern, e.g. "EA - Electronic Arts Inc".
+  // Whitespace BEFORE the dash is required: a hyphen glued to the word is
+  // part of a hyphenated name, not a delimiter — "ROLLS-ROYCE HOLDINGS PLC
+  // ADR" must not yield the "ticker" ROLLS.
+  const leadingMatch = name.match(/^([A-Z]{1,5}(?:\.[A-Z])?)\s+-\s*\S/);
   if (leadingMatch && isPlausibleTicker(leadingMatch[1]!)) {
     return leadingMatch[1]!;
   }
@@ -175,6 +200,78 @@ function extractTickerFromAssetName(assetName: string): string | null {
   }
 
   return null;
+}
+
+// ─── Exchange rows ────────────────────────────────────────────────────────────
+// An Exchange swaps one asset for another, and the source describes both in
+// ONE row: asset_name reads "<given> (Exchanged) <received> (Received)" and the
+// ticker cell can carry both tickers, given first — "-- AMCR" is "no ticker for
+// the given asset, AMCR for the received one" (Wyden, BERY -> AMCR). Putting
+// the received ticker in `ticker` next to the given asset's name was
+// misleading and broke ticker filters, so `ticker` is the GIVEN asset's and
+// the received asset gets its own fields. Nothing is guessed: every value
+// comes from the source's ticker cell or from a ticker the asset_name text
+// states ("(AVB)" / "XXXX - Name").
+
+const EXCHANGED_MARKER = /\(\s*Exchanged\s*\)/i;
+const RECEIVED_SUFFIX = /\(\s*Received\s*\)\s*$/i;
+
+interface ExchangeParts {
+  ticker: string | null;
+  received_ticker: string | null;
+  received_asset_name: string | null;
+}
+
+function cleanTickerToken(tok: string): string | null {
+  if (!/[A-Za-z0-9]/.test(tok)) return null; // "--"
+  const t = tok.toUpperCase().replace(/^[^A-Z0-9]+|[^A-Z0-9]+$/g, '');
+  if (!t || t === 'N/A' || t === 'NA') return null;
+  return t.split(/[.\-]/)[0]!.length > MAX_TICKER_BASE_LEN ? null : t;
+}
+
+function parseExchange(rawTicker: string, assetName: string): ExchangeParts {
+  const name = assetName.trim();
+  const marker = name.match(EXCHANGED_MARKER);
+  let givenPart = name;
+  let receivedPart: string | null = null;
+  if (marker && marker.index !== undefined) {
+    givenPart = name.slice(0, marker.index).trim();
+    receivedPart = name.slice(marker.index + marker[0].length).replace(RECEIVED_SUFFIX, '').trim() || null;
+  }
+
+  const nameGiven = extractTickerFromAssetName(givenPart);
+  const nameReceived = receivedPart ? extractTickerFromAssetName(receivedPart) : null;
+
+  // Ticker cell: whitespace-separated, given first; "--" holds a slot open.
+  const cell = rawTicker.trim().split(/\s+/).filter((t) => t.length > 0).map(cleanTickerToken);
+  let cellGiven: string | null = null;
+  let cellReceived: string | null = null;
+  if (cell.length >= 2) {
+    cellGiven = cell[0] ?? null;
+    cellReceived = cell[1] ?? null;
+  } else if (cell.length === 1 && cell[0]) {
+    // A lone ticker belongs to the received asset only if the text says so.
+    if (nameReceived === cell[0] && nameGiven !== cell[0]) cellReceived = cell[0];
+    else cellGiven = cell[0];
+  }
+
+  let received_asset_name: string | null = receivedPart;
+  const received_ticker = cellReceived ?? nameReceived;
+  if (received_asset_name && received_ticker) {
+    // Drop a leading "XXXX - " ticker prefix; the ticker has its own field.
+    received_asset_name = received_asset_name.replace(
+      new RegExp('^' + received_ticker.replace(/[.]/g, '\\.') + '\\s+-\\s*'),
+      '',
+    ).trim() || null;
+  }
+
+  return {
+    // Without the "(Exchanged)" marker we can't tell the halves apart; fall
+    // back to the first plausible ticker in the name, as before.
+    ticker: cellGiven ?? nameGiven,
+    received_ticker,
+    received_asset_name,
+  };
 }
 
 // ─── Asset subtype derivation ──────────────────────────────────────────────────
@@ -236,11 +333,17 @@ function normalizePlaceholder(
   parse_status: 'fetch_failed' | 'scanned_unparsed' | 'parse_failed',
 ): Transaction {
   return {
-    politician: raw.politician.trim(),
+    politician: normalizeNameCase(raw.politician),
+    politician_raw: raw.politician.trim(),
+    member_bioguide_id: null, // filled in by pipeline.ts from the roster
+    // Same ISO conversion the parsed rows get — the listing's own
+    // "MM/DD/YYYY" string used to pass through here untouched.
+    filing_date: normalizeDate(raw.filing_date) ?? raw.filing_date.trim(),
     transaction_date: null,
-    filing_date: raw.filing_date.trim(),
     ticker: null,
     asset_name: null,
+    received_ticker: null,
+    received_asset_name: null,
     asset_type: null,
     asset_subtype: null,
     type: null,
@@ -252,6 +355,9 @@ function normalizePlaceholder(
     content_hash: '',
     filing_type: raw.filing_type,
     amendment_number: raw.amendment_number,
+    row_index_in_filing: 0, // a placeholder is its filing's only row
+    supersedes_filing_id: null,
+    is_superseded: false,
     parse_status,
     pdf_url: raw.pdf_url,
     fetchedAt: '',
@@ -275,13 +381,18 @@ export function normalize(raw: RawTransaction): Transaction | null {
   if (transaction_date === null && filing_date === null) return null;
 
   const { amount_min, amount_max } = parseAmount(raw.amount);
+  const exchange = type === 'exchange' ? parseExchange(raw.ticker, raw.asset_name) : null;
 
   return {
-    politician: raw.politician.trim(),
+    politician: normalizeNameCase(raw.politician),
+    politician_raw: raw.politician.trim(),
+    member_bioguide_id: null, // filled in by pipeline.ts from the roster
     transaction_date: transaction_date ?? filing_date!,
     filing_date: filing_date ?? transaction_date!,
-    ticker: normalizeTicker(raw.ticker) ?? extractTickerFromAssetName(raw.asset_name),
+    ticker: exchange ? exchange.ticker : normalizeTicker(raw.ticker) ?? extractTickerFromAssetName(raw.asset_name),
     asset_name: raw.asset_name.trim(),
+    received_ticker: exchange?.received_ticker ?? null,
+    received_asset_name: exchange?.received_asset_name ?? null,
     asset_type: raw.asset_type.trim(),
     asset_subtype: deriveAssetSubtype(raw.asset_type, raw.asset_name),
     type: type!,
@@ -293,6 +404,9 @@ export function normalize(raw: RawTransaction): Transaction | null {
     content_hash: '', // filled in by pipeline.ts alongside id, once amount_min/max etc. are final
     filing_type: raw.filing_type,
     amendment_number: raw.amendment_number,
+    row_index_in_filing: raw.row_index_in_filing ?? null,
+    supersedes_filing_id: null, // filled in by pipeline.ts (see utils/dedup.ts collapseCrossFilingDuplicates)
+    is_superseded: false,
     parse_status: 'ok',
     pdf_url: null,
     fetchedAt: '',      // filled in by pipeline.ts — first-seen or carried forward on revision

@@ -38,6 +38,8 @@ One row per individual transaction reported in a House PTR:
 {
   "id": "4d6016b44239f646476ffac6798f21ae3e32c8ed75ea6c5b50a0bbdf9e5d3296",
   "politician": "Mark Alford",
+  "politician_raw": "Mark Alford",
+  "member_bioguide_id": "A000000",
   "transaction_date": "2026-03-16",
   "filing_date": "2026-03-31",
   "ticker": "AMZN",
@@ -50,6 +52,9 @@ One row per individual transaction reported in a House PTR:
   "source_id": "house_20034201_0",
   "content_hash": "9e5d3296a3f9c1e2b8d47f60a1c5e93b2d8f7a4c6e0b1d9f3a7c2e5b8d4f6a0c",
   "filing_type": "original",
+  "row_index_in_filing": 0,
+  "supersedes_filing_id": null,
+  "is_superseded": false,
   "parse_status": "ok",
   "pdf_url": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/20034201.pdf",
   "fetchedAt": "2026-03-31T09:12:44.000Z",
@@ -61,10 +66,12 @@ One row per individual transaction reported in a House PTR:
 | Field | Type | Notes |
 |---|---|---|
 | `id` | `string` | SHA-256 of `politician\|date\|asset\|amount_min\|amount_max\|source_id` — unique per row, changes if source_id changes |
-| `politician` | `string` | Filer name as it appears on the PTR |
+| `politician` | `string` | Filer name as the House Clerk index prints it. A doubled token in the source (`Scott Scott Franklin`) is collapsed (`Scott Franklin`); ALL-CAPS names are re-cased. See `politician_raw` |
+| `politician_raw` | `string` | The filer name exactly as the index printed it (`First Last Suffix`), before normalization |
+| `member_bioguide_id` | `string \| null` | [Bioguide id](https://bioguide.congress.gov) from the congress-legislators roster (same approach as the Senate actor). `null` when the filer is not a current House member or the name matches more than one — never guessed |
 | `transaction_date` | `YYYY-MM-DD \| null` | Trade execution date. `null` on a placeholder row (`scanned_unparsed` or `parse_failed`) — see `parse_status` |
-| `filing_date` | `YYYY-MM-DD` | Date the PTR was submitted to the House Clerk |
-| `ticker` | `string \| null` | `null` for bonds, municipals, structured notes — also `null` on a placeholder row |
+| `filing_date` | `YYYY-MM-DD` | Date the PTR was submitted to the House Clerk. This is the date the run window selects on |
+| `ticker` | `string \| null` | The source's own ticker, cleaned of artifacts (`"-- AMCR"` → `AMCR`). `null` when the source omits it (Treasuries, municipals, private funds, …), when it gave a company-name abbreviation instead of a ticker (`COLPAL`), and on a placeholder row. Never guessed or looked up — see "Known limitations" |
 | `asset_name` | `string \| null` | Full asset description. `null` on a placeholder row |
 | `asset_type` | `string \| null` | `Stock`, `Stock Option`, `Mutual Fund`, `Corporate Bond`, `Government Security`, etc. `null` on a placeholder row |
 | `asset_subtype` | `'ETF' \| 'Mutual Fund' \| null` | Derived directly from the source PDF's own asset-type marker code (`[ET]` → `ETF`, `[MF]` → `Mutual Fund`) — a direct source signal, unlike the Senate actor's name-text guess. `null` for every other `asset_type`, and on a placeholder row |
@@ -76,6 +83,9 @@ One row per individual transaction reported in a House PTR:
 | `content_hash` | `string` | SHA-256 of `politician\|date\|asset\|type\|amount_min\|amount_max\|owner` (source_id excluded) — see "Duplicate transactions across filings" below |
 | `filing_type` | `'original' \| 'amendment' \| null` | Read from the PTR's own per-row "Filing Status: New/Amended" line. `null` only when that line is missing or unrecognized — never guessed from duplication. No amendment-number equivalent exists in this source (unlike Senate) |
 | `amendment_number` | `integer \| null` | Always `null` on this actor — schema parity with the Senate actor's "(Amendment N)" label, which has no equivalent in this source |
+| `row_index_in_filing` | `integer \| null` | 0-based position of the row among its filing's parsed rows, in source order — tells apart repeated line items inside one filing (they share a `content_hash`). Not part of `id` or `content_hash`; `0` on a placeholder |
+| `supersedes_filing_id` | `string \| null` | On an amended filing's rows: the earlier filing by the same filer that it re-lists trades from. `null` when not determinable — see "Duplicate transactions across filings" |
+| `is_superseded` | `boolean` | `true` on the surviving rows of a filing that a later amended filing supersedes by that rule |
 | `parse_status` | `'ok' \| 'fetch_failed' \| 'scanned_unparsed' \| 'parse_failed'` | `'ok'` for a normally-parsed row. `'fetch_failed'` means the PDF download itself failed after retries — a transient network/host issue, superseded automatically once a later run succeeds. `'scanned_unparsed'` means this filing's PDF has no extractable text layer at all (scanned/paper PTR, no OCR fallback). `'parse_failed'` means the PDF DOES have a text layer and transaction markers were found, but no row matched the expected shape — a parser gap, not a known source-format limitation. See "Coverage" and "Scanned, paper, and parse-failed filings" below |
 | `pdf_url` | `string` | The source House PTR PDF this row was parsed from (or, for a placeholder row, the PDF that couldn't be read/matched) |
 | `fetchedAt` | `string` (ISO 8601 UTC) | When this row was first pulled from source. Immutable — never updated by a later re-fetch of the same, unchanged row. See "Fetch timestamps and immutable history" below |
@@ -86,16 +96,18 @@ One row per individual transaction reported in a House PTR:
 
 **Every filing the House Clerk's index lists shows up in the output — either as transaction rows or as an explicitly flagged placeholder. No filing is silently dropped.**
 
-| `parse_status` | Meaning | Null fields | Billed? |
+| `parse_status` | Meaning | Null fields | Billed as a "Transaction record"? |
 |---|---|---|---|
 | `ok` | Normally parsed — a real transaction row | none | Yes |
-| `fetch_failed` | The PDF download itself failed after retries (network error, timeout, non-2xx). The filing's content was never examined. Transient — a later run that successfully fetches the same filing automatically replaces this placeholder with real rows | all transaction-detail fields | No |
-| `scanned_unparsed` | The PDF has no extractable text layer at all (a scanned/paper PTR). No OCR fallback | all transaction-detail fields | No |
-| `parse_failed` | The PDF has a text layer and transaction markers were found, but no row matched the expected shape — a parser gap, not a known source-format limitation | all transaction-detail fields | No |
+| `fetch_failed` | The PDF download itself failed after retries (network error, timeout, non-2xx). The filing's content was never examined. Transient — a later run that successfully fetches the same filing automatically replaces this placeholder with real rows | all transaction-detail fields | Yes |
+| `scanned_unparsed` | The PDF has no extractable text layer at all (a scanned/paper PTR). No OCR fallback | all transaction-detail fields | Yes |
+| `parse_failed` | The PDF has a text layer and transaction markers were found, but no row matched the expected shape — a parser gap, not a known source-format limitation | all transaction-detail fields | Yes |
 
 A placeholder row (`fetch_failed`, `scanned_unparsed`, or `parse_failed`) carries `politician`, `filing_date`, `source_id`, and `pdf_url`; every transaction-detail field (`transaction_date`, `ticker`, `asset_name`, `asset_type`, `asset_subtype`, `type`, `amount_min`, `amount_max`, `owner`) is `null`.
 
 **If you only want parsed transactions, filter `parse_status = "ok"`.**
+
+**Billing.** Every row written to the dataset is billed as a normal "Transaction record" event — **including placeholder rows** (`fetch_failed`, `scanned_unparsed`, `parse_failed`). The platform bills every item written to an Actor's default dataset, and the Actor cannot exempt individual rows. To avoid paying for placeholders, set `tickers` or a transaction-date filter (which withholds them), or use `members` to skip filers you don't need.
 
 **Measured (last 90 days, September 2026):** 133 of 133 PTR filings reported by the House index are accounted for in the output — 133 in, 133 (or their placeholders) out. Roughly 14% (~19 filings) are scanned paper PTRs (`scanned_unparsed`). `fetch_failed` and `parse_failed` are expected to be rare and transient/one-off respectively, not steady-state percentages — every pipeline run logs and reports `fetchFailedCount` / `parseFailedCount` in its `OUTPUT` key-value record so a spike or a new parser gap doesn't go unnoticed.
 
@@ -141,23 +153,45 @@ doesn't go unnoticed.
 
 ### Duplicate transactions across filings
 
-`id` is unique per row (it includes `source_id`), so rows never
-collide — but the same real-world trade can still appear under two
-different ids if it's reported in more than one source document.
-`content_hash` fingerprints only the trade's real-world content
-(source_id excluded), so duplicate copies hash identically and you can
-find them.
+`id` is unique per row (it includes `source_id`), so rows never collide. But
+the same real-world trade can appear in more than one source document — for
+example a filing marked `Filing Status: Amended` that re-lists transactions
+from the original. `content_hash` fingerprints only the trade's real-world
+content — politician, date, asset, buy/sell, amount range, **owner** — with
+`source_id` left out, so duplicate copies hash identically.
 
-**We never drop or merge rows.** A shared `content_hash`:
+**Exact cross-filing duplicates are removed by default.** Within one run, if
+rows from *different* filings (DocIDs) by the same filer share a
+`content_hash`, one copy is returned: the one from a filing with an
+`Amended` row if there is one, otherwise the later `filing_date`. This
+happens **before** anything is written or charged, so removed duplicates are
+never billed. Set `includeDuplicates: true` to keep every copy.
 
-- **Same document (same `source_id` prefix, `house_<DocID>_`):** a
-  legitimate separate transaction — e.g. two same-day tranches of the
-  same purchase. Keep both.
-- **Different documents (different DocID):** the same trade reported
-  more than once — e.g. a row later marked `filing_type: "amendment"`
-  that re-lists a transaction from the original filing. Summing across
-  both double-counts it — reconcile by `content_hash` before
-  aggregating.
+Not duplicates, and never touched:
+
+- **Rows that differ in `owner`.** A filer who trades the same stock for
+  themself *and* a spouse (or a joint account and a dependent) reports two
+  lines with the same ticker, date and amount. Owner is part of the hash, so
+  they are different rows. Run `IDgg2nQSlsPoPxJhr` (475 rows) had 15
+  identical-looking pairs (Donalds, Franklin, …): 9 differed in owner.
+- **Identical rows within one filing** (same `source_id` prefix, `house_<DocID>_`).
+  Repeated line items of a single PTR — the other 6 pairs in that run.
+  `row_index_in_filing` (0-based, source order) tells them apart. No
+  pair in that run spanned two filings, so nothing there was a true
+  duplicate.
+
+Two fields record supersession where the data shows it. The House source has
+no "amends filing X" link (and no amendment number — `amendment_number` is
+always `null`), so:
+
+- `supersedes_filing_id` — on an amended filing's rows: the `filing_id` of
+  the earlier filing by the same filer that shares at least one identical trade.
+- `is_superseded` — `true` on the surviving rows of that earlier filing.
+
+Anything not shown by shared trades stays `null` / `false` — "not
+determinable", not "not superseded". Duplicates **across runs** are
+unaffected (runs never see each other's dataset): group by `content_hash` when
+merging datasets.
 
 ### Fetch timestamps and immutable history
 
@@ -210,7 +244,7 @@ Apify CLI:
 apify mcp install cursor --tools seralifatih/congress-trading-pipeline,seralifatih/congress-trading-pipeline-1
 ```
 
-On first connection you'll be asked to sign in to Apify. Runs are billed to your Apify account at the normal pay-per-result price. On pay-per-event pricing, only a normally-parsed row is billed — a `fetch_failed`, `scanned_unparsed`, or `parse_failed` placeholder is written to the dataset for free.
+On first connection you'll be asked to sign in to Apify. Runs are billed to your Apify account at the normal pay-per-result price. On pay-per-event pricing every row written to the dataset is billed, placeholders included — a `fetch_failed`, `scanned_unparsed`, or `parse_failed` placeholder is written and billed like any other row (see "Coverage").
 
 ---
 
@@ -268,11 +302,147 @@ curl "https://api.apify.com/v2/datasets/<dataset-id>/items?token=YOUR_TOKEN&form
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `fetchDaysBack` | `integer` | `90` | Rolling window of PTRs to fetch (1-365) |
-| `fromDate` | `string` (YYYY-MM-DD) | — | Explicit start date. Overrides `fetchDaysBack` |
-| `toDate` | `string` (YYYY-MM-DD) | today | Explicit end date |
-| `debugPtrLimit` | `integer` | `0` | Diagnostic — fetch only first N PTRs |
+| `fetchDaysBack` | `integer` | `90` | Rolling window of PTRs to fetch (1–365), counted back from today. See "Window" below |
+| `fromDate` | `string` (YYYY-MM-DD) | — | Explicit start of the window. Overrides `fetchDaysBack` |
+| `toDate` | `string` (YYYY-MM-DD) | today | Explicit end of the window |
+| `members` | `string[]` | — | Only these House members. Case-insensitive; matches the normalized name **and nicknames**. See "Filters" below |
+| `tickers` | `string[]` | — | Only transactions in these tickers (case-insensitive). Rows with no ticker are excluded |
+| `transactionDateFrom` | `string` (YYYY-MM-DD) | — | Only trades executed on or after this date (inclusive) |
+| `transactionDateTo` | `string` (YYYY-MM-DD) | — | Only trades executed on or before this date (inclusive) |
+| `includeDuplicates` | `boolean` | `false` | Keep exact cross-filing duplicate rows instead of removing them |
+| `debugPtrLimit` | `integer` | `0` | Diagnostic — fetch only the first N PTRs (newest first, after the `members` filter). Handy for a cheap test run |
 | `debugPdfText` | `boolean` | `false` | Log first 2KB of any PDF where regex finds 0 rows |
+
+Every field is optional; an empty input behaves as before.
+
+### Window
+
+**The window selects filings by *filing date*** — the `FilingDate` the House
+Clerk's index records for each PTR — not by the date of the trades inside it.
+Verified on run `IDgg2nQSlsPoPxJhr`: its rows had `filing_date` 2026-07-06 …
+2026-09-25 while `transaction_date` spanned 2025-12-16 … 2026-09-15, because
+members routinely file weeks or months after trading. Use
+`transactionDateFrom`/`transactionDateTo` to select by trade date; they apply
+**on top of** the filing-date window, so a trade is returned only if its filing
+is inside the window too (widen `fetchDaysBack`/`fromDate` to catch late-filed
+older trades — the run logs a warning when `transactionDateFrom` reaches back
+past the window). A window that crosses New Year reads both calendar years'
+index files.
+
+That run had asked for `fetchDaysBack: 30` but received a 90-day window:
+`fetchDaysBack` (and `debugPtrLimit`, and the hidden `enableOcr`) were
+written to environment variables after the code had already read its
+environment, so they were silently ignored. They are honoured as of this
+version — see the CHANGELOG.
+
+### Filters
+
+All filters are applied **before anything is written or charged** — you are
+never billed for a row a filter removed.
+
+- **`members`** is applied to the Clerk's PTR **index**, before any PDF is
+  downloaded: a non-matching member's PDFs are never fetched or parsed. An
+  entry matches a filer when it resolves to the same member (`"Chuck
+  Fleischmann"` matches `Charles J. "Chuck" Fleischmann`; `"Don Beyer"` matches
+  `Donald Sternoff Beyer Jr`), when all of its name tokens appear in the filer's
+  name after nickname normalization, or when it is a bioguide id (`P000197`).
+  A bare last name matches every member with that last name. Member resolution
+  uses the [congress-legislators](https://github.com/unitedstates/congress-legislators)
+  roster — the same source and tiers the Senate and Lobbying × Trades Overlap
+  actors use, so all three agree; if the download fails the run logs a warning
+  and falls back to name-token matching.
+- **`transactionDateFrom`** also prunes the index: a PTR can only report trades
+  that already happened, so a filing filed before that date cannot contain a
+  trade on or after it and its PDF is never downloaded. `transactionDateTo` has
+  no such shortcut (a filing made today can report an old trade), so it is
+  applied to each parsed row.
+- **`tickers`** and the exact trade-date bounds need the parsed PDF, so they
+  are applied row by row.
+- When `tickers`, `transactionDateFrom` or `transactionDateTo` is set,
+  **placeholder rows** (`fetch_failed`, `scanned_unparsed`, `parse_failed`)
+  are not emitted — their content is unknown, so the filter can't be evaluated.
+  They are counted as `placeholdersExcludedCount` in `RUN_SUMMARY`. A `members`
+  filter alone keeps them (the filer is known).
+
+### Charge cap behavior
+
+- **Billing is per row written to the dataset.** The Actor's published pricing
+  has one per-record event, **"Transaction record"** (the platform's
+  `apify-default-dataset-item`), billed by the platform for every item written
+  to the default dataset. The cap math in this actor uses exactly that price.
+  The SDK offers no way to exempt individual rows from it (see CHANGELOG 1.6.0,
+  "Investigated").
+- **The cap stops the write, not the download.** When the run's maximum total
+  charge is reached the actor stops *writing* rows (newest filings first, see
+  above) — but it has already downloaded and parsed every PDF in the window, and
+  that work is not skipped. At the current price that wasted work is cheap (on
+  the order of $0.01–0.02 per 1,000 rows' worth of compute), so this is
+  deliberate for now; narrow the window or use `members` to avoid it.
+- A truncated run is reported in `RUN_SUMMARY` — see below.
+
+### Processing order and the max charge (`RUN_SUMMARY`)
+
+Filings are processed and written **newest filing first**. (The Clerk's index
+is alphabetical by member; processing it in that order meant a run that stopped
+early lost everyone late in the alphabet — in run `IDgg2nQSlsPoPxJhr` the output
+ended at "Hern" and Pelosi never appeared.) If the run's **maximum total
+charge** is reached, the run still ends `SUCCEEDED` — that is how the platform
+behaves — but it no longer does so silently: the actor stops writing at the
+cap, bills only what it wrote, logs a warning, sets the run's status message,
+and writes a `RUN_SUMMARY` record to the run's key-value store:
+
+```json
+{
+  "truncated": true,
+  "reason": "max_total_charge_reached",
+  "rowsEmitted": 475,
+  "rowsNotEmitted": 125,
+  "lastFilingDate": "2026-07-21",
+  "lastFilingId": "…",
+  "windowFrom": "2026-07-03",
+  "windowTo": "2026-10-01"
+}
+```
+
+`RUN_SUMMARY` is written on every successful run (`truncated: false`,
+`reason: null` when nothing was cut). A truncated run is missing the *oldest*
+filings; `lastFilingDate` is the filing date of the last row written (a filing
+at the cap may be only partly written). To get the rest, raise the maximum
+charge and/or narrow the window or filters — e.g. re-run with `toDate` set to
+`lastFilingDate` (that day overlaps). `RUN_SUMMARY` also reports
+`duplicatesCollapsed` (exact cross-filing duplicates removed before writing),
+`placeholdersWithheld` (placeholder rows not emitted because a `tickers` or
+transaction-date filter was set), `skippedByMemberCount`,
+`skippedByTransactionDateCount`, `filteredByTickerCount` and
+`filteredByTransactionDateCount`. (`duplicatesRemoved` and
+`placeholdersExcludedCount` are the same two numbers under their earlier names.)
+
+### Known limitations
+
+- **Missing tickers.** About one row in ten has `ticker: null` with
+  `asset_name` populated. In run `IDgg2nQSlsPoPxJhr` (468 parsed rows) the 44
+  null-ticker rows were: 33 `Government Security` (Treasuries and municipal
+  bonds — Beyer, Clark, Cohen, DelBene, Hern, …), 6 `Other` (private funds
+  such as Oaktree / Blackstone vehicles, and two filers who typed a ticker as
+  the whole asset name — `FAS`, `RSP ETF`), 3 `Corporate Bond`, and 2
+  `Stock` (an Ellington preferred share, a private-company equity). The PDF
+  gives no ticker for these; nothing is looked up or guessed (ticker enrichment
+  is Phase 2). Part of the apparent null list was a real parse bug — see the
+  owner-code note below.
+- **Owner code glued to the asset name.** The PDF prints the owner column
+  (`SP`/`DC`/`JT`) with no separator before the asset name. The parser strips
+  it for "Word"-case names, and — as of this version — for all-caps and
+  digit/dot/lowercase-leading names when the evidence is unambiguous (a ticker
+  whose first letter matches the name without the code; or `JT` on a ticker-less
+  row). A ticker-less all-caps row owned by a spouse or dependent child
+  (`SPALPHAKEYS BLACKSTONE LIFE SCIENCES VI LP`) cannot be told apart from a
+  name that really starts with `SP`/`DC` (`SPRINGFIELD…`, `DC WATER…`) and keeps
+  its prefix with `owner: "self"`.
+- **Names are as the Clerk's index prints them**, apart from collapsing a
+  doubled token (the 2026 index has `First: "Scott Scott"` for Rep. Franklin and
+  `"John John"` for another member). `politician_raw` is the original;
+  `member_bioguide_id` is the canonical key for current House members and is
+  `null` for anyone else or an ambiguous name.
 
 ---
 

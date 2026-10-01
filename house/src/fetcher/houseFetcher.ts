@@ -44,7 +44,7 @@ interface RawMember {
   DocID?: string | number;
 }
 
-interface FilingIndex {
+export interface FilingIndex {
   member: string;
   filingDate: string;       // YYYY-MM-DD
   filingDateRaw: string;    // M/D/YYYY as in XML
@@ -141,21 +141,92 @@ function isoDefaultStart(): string {
   return format(subDays(new Date(), config.FETCH_DAYS_BACK), 'yyyy-MM-dd');
 }
 
+// ─── Early (pre-download) filtering ───────────────────────────────────────────
+// The index carries filer name and filing date only. Both let us skip a filing
+// BEFORE its PDF is downloaded and parsed:
+//   - members: the index name is matched against the user's `members`.
+//   - transactionDateFrom: a PTR can only report trades that already
+//     happened, so every transaction in a filing is dated on or before its
+//     filing date — a filing filed before transactionDateFrom cannot contain
+//     a trade on/after it. (No equivalent prune for transactionDateTo: a
+//     filing made today can report an old trade.)
+// Tickers and the exact trade-date bounds need the parsed PDF and are applied
+// row-by-row in the pipeline.
+
+export interface EarlyFilterOptions {
+  memberMatcher?: (displayName: string) => boolean;
+  transactionDateFrom?: string;
+}
+
+export function filterFilingsEarly(
+  filings: FilingIndex[],
+  options: EarlyFilterOptions,
+): { kept: FilingIndex[]; skippedByMember: number; skippedByTransactionDate: number } {
+  let skippedByMember = 0;
+  let skippedByTransactionDate = 0;
+  const kept: FilingIndex[] = [];
+  for (const f of filings) {
+    if (options.memberMatcher && !options.memberMatcher(f.member)) {
+      skippedByMember++;
+      continue;
+    }
+    if (options.transactionDateFrom && f.filingDate < options.transactionDateFrom) {
+      skippedByTransactionDate++;
+      continue;
+    }
+    kept.push(f);
+  }
+  return { kept, skippedByMember, skippedByTransactionDate };
+}
+
+// Newest filing first (then highest DocID, which grows with time). The index
+// itself is alphabetical by member, so processing it in index order meant a
+// run that stopped early (charge cap, partial failure) lost everyone late in
+// the alphabet. Newest-first makes a cut lose the OLDEST filings instead.
+export function sortNewestFirst<T extends { filingDate: string; docId: string }>(filings: T[]): T[] {
+  return [...filings].sort(
+    (a, b) =>
+      b.filingDate.localeCompare(a.filingDate) ||
+      Number(b.docId) - Number(a.docId) ||
+      b.docId.localeCompare(a.docId),
+  );
+}
+
+// The index ZIP is per calendar year, so a window that crosses New Year needs
+// both years' indexes. Never beyond the current year (no such ZIP yet).
+export function indexYears(fromDate: string, toDate: string, currentYear: number): number[] {
+  const first = Math.min(parseInt(fromDate.slice(0, 4), 10), currentYear);
+  const last = Math.min(parseInt(toDate.slice(0, 4), 10), currentYear);
+  const years: number[] = [];
+  for (let y = first; y <= last; y++) years.push(y);
+  return years.length > 0 ? years : [currentYear];
+}
+
+export interface FetchAllHouseOptions extends EarlyFilterOptions {
+  // Override the DEBUG_PTR_LIMIT / ENABLE_OCR env vars. config.ts and this
+  // module read the environment once at import time — before the Actor input
+  // is known — so values taken from the input must be passed in.
+  debugPtrLimit?: number;
+  enableOcr?: boolean;
+}
+
 export async function fetchAllHouse(
   fromDate: string = isoDefaultStart(),
   toDate: string = isoToday(),
+  options: FetchAllHouseOptions = {},
 ): Promise<FetchResult> {
   log.info(`fetchAllHouse from=${fromDate} to=${toDate}`);
 
-  const year = new Date().getFullYear();
-
   // 1) Download + extract index
-  let filings: FilingIndex[];
+  let allFilings: FilingIndex[];
   try {
-    const zipBuf = await withRetry(() => downloadZip(year), 3, 1000);
-    const xml = extractIndexXml(zipBuf, year);
-    filings = parseIndex(xml, year, fromDate, toDate);
-    log.info(`House index: ${filings.length} PTR filings in window`);
+    allFilings = [];
+    for (const year of indexYears(fromDate, toDate, new Date().getFullYear())) {
+      const zipBuf = await withRetry(() => downloadZip(year), 3, 1000);
+      const xml = extractIndexXml(zipBuf, year);
+      allFilings.push(...parseIndex(xml, year, fromDate, toDate));
+    }
+    log.info(`House index: ${allFilings.length} PTR filings in window`);
   } catch (err) {
     const message = err instanceof AxiosError ? err.message : String(err);
     log.error(`House index fetch failed: ${message}`);
@@ -165,8 +236,23 @@ export async function fetchAllHouse(
     };
   }
 
+  // Members / transactionDateFrom filters at the index level: a skipped
+  // filing's PDF is never downloaded or parsed.
+  const early = filterFilingsEarly(allFilings, options);
+  if (early.skippedByMember > 0 || early.skippedByTransactionDate > 0) {
+    log.info(
+      `Early filters: ${early.kept.length}/${allFilings.length} filings kept ` +
+      `(skipped ${early.skippedByMember} by members, ${early.skippedByTransactionDate} by transactionDateFrom)`,
+    );
+  }
+  const earlyCounts = {
+    skippedByMemberCount: early.skippedByMember,
+    skippedByTransactionDateCount: early.skippedByTransactionDate,
+  };
+  const filings = sortNewestFirst(early.kept);
+
   if (filings.length === 0) {
-    return { success: true, records: [], fetchFailedCount: 0, parseFailedCount: 0, ocrFilingCount: 0, ocrRowCount: 0 };
+    return { success: true, records: [], fetchFailedCount: 0, parseFailedCount: 0, ocrFilingCount: 0, ocrRowCount: 0, ...earlyCounts };
   }
 
   // 2) Fetch each PDF, parse rows
@@ -178,10 +264,11 @@ export async function fetchAllHouse(
   let ocrFilings = 0;
   let ocrRows = 0;
 
-  const debugLimit = process.env['DEBUG_PTR_LIMIT'] ? parseInt(process.env['DEBUG_PTR_LIMIT'], 10) : 0;
+  const debugLimit = options.debugPtrLimit ?? (process.env['DEBUG_PTR_LIMIT'] ? parseInt(process.env['DEBUG_PTR_LIMIT'], 10) : 0);
+  const enableOcr = options.enableOcr ?? config.ENABLE_OCR;
   const filingsToFetch = debugLimit > 0 ? filings.slice(0, debugLimit) : filings;
   if (debugLimit > 0) {
-    log.warn(`DEBUG_PTR_LIMIT=${debugLimit} — fetching subset only`);
+    log.warn(`debugPtrLimit=${debugLimit} — fetching subset only (newest filings first)`);
   }
 
   for (let i = 0; i < filingsToFetch.length; i++) {
@@ -205,7 +292,7 @@ export async function fetchAllHouse(
         // CLI OCR compute per scanned filing for no recovered rows on the
         // one real filing measured so far. Disabled, this is byte-for-byte
         // the same scanned_unparsed behavior as before OCR existed.
-        if (config.ENABLE_OCR) {
+        if (enableOcr) {
           // A known template must match AND every row must validate, or
           // this filing stays scanned_unparsed (all-or-nothing) — see
           // ocr/index.ts.
@@ -283,10 +370,11 @@ export async function fetchAllHouse(
   return {
     success: !partial,
     records,
-    error: partial ? `${errors}/${filings.length} House PDF fetches failed` : undefined,
+    error: partial ? `${errors}/${filingsToFetch.length} House PDF fetches failed` : undefined,
     fetchFailedCount: fetchFailed,
     parseFailedCount: parseFailed,
     ocrFilingCount: ocrFilings,
     ocrRowCount: ocrRows,
+    ...earlyCounts,
   };
 }

@@ -1,0 +1,12 @@
+[
+  { "id": { "bioguide": "T000278" }, "name": { "first": "Tommy", "last": "Tuberville", "official_full": "Tommy Tuberville" }, "terms": [{ "type": "sen" }] },
+  { "id": { "bioguide": "M000355" }, "name": { "first": "Addison", "middle": "Mitchell", "nickname": "Mitch", "last": "McConnell", "official_full": "Mitch McConnell" }, "terms": [{ "type": "sen" }] },
+  { "id": { "bioguide": "S001217" }, "name": { "first": "Rick", "last": "Scott", "official_full": "Rick Scott" }, "terms": [{ "type": "sen" }] },
+  { "id": { "bioguide": "S001184" }, "name": { "first": "Tim", "last": "Scott", "official_full": "Tim Scott" }, "terms": [{ "type": "sen" }] },
+  { "id": { "bioguide": "M001243" }, "name": { "first": "David", "middle": "H.", "nickname": "Dave", "last": "McCormick", "official_full": "Dave McCormick" }, "terms": [{ "type": "sen" }] },
+  { "id": { "bioguide": "B001277" }, "name": { "first": "Richard", "last": "Blumenthal", "official_full": "Richard Blumenthal" }, "terms": [{ "type": "sen" }] },
+  { "id": { "bioguide": "S001232" }, "name": { "first": "Tim", "last": "Sheehy", "official_full": "Tim Sheehy" }, "terms": [{ "type": "sen" }] },
+  { "id": { "bioguide": "C001113" }, "name": { "first": "Catherine", "last": "Cortez Masto", "official_full": "Catherine Cortez Masto" }, "terms": [{ "type": "sen" }] },
+  { "id": { "bioguide": "K000383" }, "name": { "first": "Angus", "middle": "S.", "last": "King", "suffix": "Jr.", "official_full": "Angus King" }, "terms": [{ "type": "sen" }] },
+  { "id": { "bioguide": "H000001" }, "name": { "first": "Hal", "last": "Houseman", "official_full": "Hal Houseman" }, "terms": [{ "type": "rep" }] }
+]

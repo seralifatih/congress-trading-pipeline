@@ -14,6 +14,9 @@ export interface RawTransaction {
   amount: string;
   owner: string;
   source_id: string;
+  // 0-based position of this row among the filing's parsed data rows, in
+  // source order. Absent on rows from code paths that don't set it.
+  row_index_in_filing?: number;
   // The filing's own doc id (House DocID), shared by EVERY row and
   // placeholder that came from this one filing — unlike source_id, which is
   // per-transaction-row (house_${docId}_${rowIndex}) and therefore different
@@ -66,6 +69,14 @@ export interface RawTransaction {
 export const TransactionSchema = z.object({
   id: z.string().optional(), // sha256 hex digest, not a UUID — see utils/dedup.ts
   politician: z.string().min(1),
+  // The filer name as the House index printed it (First Last Suffix), before
+  // any normalization — e.g. "Scott Scott Franklin" (the source's own First
+  // field is "Scott Scott"). Optional so rows from older versions validate.
+  politician_raw: z.string().optional(),
+  // unitedstates/congress-legislators bioguide id, resolved from the filer
+  // name. Null when the name matches no current House member or more than
+  // one — never guessed.
+  member_bioguide_id: z.string().nullable().optional(),
   // Null only on a 'scanned_unparsed' placeholder row — see parse_status.
   transaction_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD').nullable(),
   filing_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Must be YYYY-MM-DD'),
@@ -130,6 +141,19 @@ export const TransactionSchema = z.object({
   // Always null on House — schema parity with Senate's "(Amendment N)" label,
   // which has no House-source equivalent (see filing_type above).
   amendment_number: z.number().int().positive().nullable().optional(),
+  // Set on an amended row's filing when an earlier filing by the same filer
+  // shares at least one identical trade with it (same content_hash) — the only
+  // evidence of supersession the source exposes (no explicit link). The id of
+  // that earlier filing; null when not determinable.
+  // 0-based position of the row among its filing's parsed data rows, in source
+  // order — tells apart repeated line items inside one filing (which share a
+  // content_hash). Not part of id or content_hash. 0 on a placeholder (a
+  // filing's only row). Null when the producing code path couldn't provide it.
+  row_index_in_filing: z.number().int().nonnegative().nullable().optional(),
+  supersedes_filing_id: z.string().nullable().optional(),
+  // True on the surviving rows of a filing that a later amended filing
+  // supersedes by the rule above. False otherwise.
+  is_superseded: z.boolean().optional(),
   // ISO 8601 UTC timestamp — when this row (this exact id) was first pulled
   // from source. Set once at insert and never touched again; a re-fetch of
   // an unchanged row is dropped by dedup() before it would overwrite this.
@@ -176,6 +200,11 @@ export interface FetchResult {
   ocrFilingCount: number;
   // Total "ocr" rows produced this run, across all ocrFilingCount filings.
   ocrRowCount: number;
+  // Filings skipped at the PTR index level — before their PDF was
+  // downloaded — because they could not match the members /
+  // transactionDateFrom inputs. Absent when no such filter was set.
+  skippedByMemberCount?: number;
+  skippedByTransactionDateCount?: number;
 }
 
 // ─── Query filters for the store / API layer ─────────────────────────────────
@@ -194,8 +223,18 @@ export interface QueryFilters {
 
 // ─── Storage adapter interface ────────────────────────────────────────────────
 
+// Returned by a store whose save() can stop short — ApifyStore, when the
+// run's max total charge is reached. A store with no cap (SqliteStore) may
+// return void; the pipeline then treats everything as saved.
+export interface SaveResult {
+  saved: number;
+  truncated: boolean;
+  reason?: 'max_total_charge_reached';
+  notSaved: number;
+}
+
 export interface StoreAdapter {
-  save(transactions: Transaction[]): Promise<void>;
+  save(transactions: Transaction[]): Promise<SaveResult | void>;
   query(filters?: QueryFilters): Promise<Transaction[]>;
   // Removes stale placeholder rows for the given filing_ids — called by
   // pipeline.ts's supersede step when a filing that previously produced a
