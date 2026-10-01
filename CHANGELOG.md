@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Lobbying × Trades Overlap actor (`lobbying-overlap/`) is deprecated: not maintained and not available on Apify. See [`lobbying-overlap/DEPRECATED.md`](./lobbying-overlap/DEPRECATED.md). Earlier entries below are kept as history.
 
-## [Unreleased] - Lobbying × Trades Overlap 0.2.0 (actor.json `0.1.0` → `0.2.0`)
+## [lobbying-overlap 0.2.0] - never released (deprecated; actor.json `0.1.0` → `0.2.0`)
 
 Lobbying × Trades Overlap actor only. **Contains output-breaking changes** (vocabulary, field semantics) — treat as a major version for consumers. The House and Senate actors are unchanged.
 
