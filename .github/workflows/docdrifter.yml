@@ -10,12 +10,22 @@ permissions:
   id-token: write
 
 jobs:
-  check-docs:
+  check-docs-senate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: seralifatih/docdrifter@v1
         with:
-          src-path: "lobbying-overlap/src/"
-          docs-path: "lobbying-overlap/README.md"
-          repo-description: "an Apify actor that joins US federal lobbying disclosures (LDA) with Congressional stock trading disclosures (STOCK Act PTR) into auditable overlap records"
+          src-path: "senate/src/"
+          docs-path: "senate/README.md"
+          repo-description: "an Apify actor and REST API that pulls U.S. Senate Periodic Transaction Reports (STOCK Act) from the Senate eFD and emits normalized, deduplicated trade records"
+
+  check-docs-house:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: seralifatih/docdrifter@v1
+        with:
+          src-path: "house/src/"
+          docs-path: "house/README.md"
+          repo-description: "an Apify actor that pulls U.S. House Periodic Transaction Reports (STOCK Act) from the Clerk of the House, parses the filing PDFs, and emits normalized, deduplicated trade records"

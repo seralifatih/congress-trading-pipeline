@@ -4,7 +4,6 @@ Every U.S. Senate Periodic Transaction Report — the stock trades senators are 
 
 Part of a set:
 - **[House Trading Pipeline](https://apify.com/seralifatih/congress-trading-pipeline-1)** — same target schema, House Clerk PTRs. Run either or both.
-- **[Congress Lobbying × Trades Overlap](https://apify.com/seralifatih/congress-lobbying-trades-overlap)** — joins House + Senate trades with federal lobbying filings by member, quarter, and sector.
 
 ---
 
@@ -386,7 +385,7 @@ never billed for a row a filter removed.
   (`T000278`). A bare last name (`"Scott"`) matches every senator with that
   last name — add a first name to narrow it. Member resolution uses the
   [congress-legislators](https://github.com/unitedstates/congress-legislators)
-  roster (the same source the Lobbying × Trades Overlap actor uses); if that
+  roster; if that
   download fails the run logs a warning and falls back to name-token matching.
 - **`transactionDateFrom`** also prunes early: a PTR can only report trades
   that already happened, so a filing submitted before that date cannot contain

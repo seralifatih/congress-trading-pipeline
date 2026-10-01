@@ -1,5 +1,7 @@
 # Congress Lobbying × Trades Overlap
 
+> **Deprecated — not maintained and not available on Apify.** This actor reads tracker runs from the account running it, so it only works for an account that has its own unfiltered tracker runs. There is no fix date. See [DEPRECATED.md](./DEPRECATED.md).
+
 > **Limitation — tracker runs are read from the account running this actor.** This actor currently reads the House and Senate tracker runs from the Apify account that runs it, so it only works for an account that has its own unfiltered tracker runs covering the requested quarters. An account without them gets a failed run. See "Tracker input requirements" below.
 
 **Cross-reference US federal lobbying disclosures with Congressional stock trading disclosures — one auditable record per overlap.**

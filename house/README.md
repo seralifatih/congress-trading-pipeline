@@ -9,7 +9,6 @@ No third-party aggregators. Direct from the Clerk of the House.
 
 Part of a set:
 - **[Senate Trading Pipeline](https://github.com/seralifatih/senate-trading-pipeline)** — same target schema, separate fetcher + PDF parser. Run either or both.
-- **[Congress Lobbying × Trades Overlap](https://apify.com/seralifatih/congress-lobbying-trades-overlap)** — joins House + Senate trades with federal lobbying filings by member, quarter, and sector.
 
 ## Who uses this
 
@@ -348,8 +347,8 @@ never billed for a row a filter removed.
   name after nickname normalization, or when it is a bioguide id (`P000197`).
   A bare last name matches every member with that last name. Member resolution
   uses the [congress-legislators](https://github.com/unitedstates/congress-legislators)
-  roster — the same source and tiers the Senate and Lobbying × Trades Overlap
-  actors use, so all three agree; if the download fails the run logs a warning
+  roster — the same source and tiers the Senate actor uses, so both
+  agree; if the download fails the run logs a warning
   and falls back to name-token matching.
 - **`transactionDateFrom`** also prunes the index: a PTR can only report trades
   that already happened, so a filing filed before that date cannot contain a
@@ -520,7 +519,6 @@ This actor's source is the [Clerk of the U.S. House — Financial Disclosure Rep
 
 - **OCR fallback** for scanned PDFs (older paper filings)
 - **Ticker enrichment** for bond/muni rows where the source omits the ticker
-- ~~Cross-chamber merge actor~~ → shipped as [Congress Lobbying × Trades Overlap](https://apify.com/seralifatih/congress-lobbying-trades-overlap), which consumes both Senate + House datasets and joins them with LDA lobbying filings
 
 ---
 
