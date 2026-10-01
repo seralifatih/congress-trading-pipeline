@@ -10,11 +10,19 @@ overlapped is itself information (see pricing rationale in CLAUDE.md).
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from datetime import date, datetime, timezone
 
 from apify import Actor
 
-from .models import OverlapType, RunSummary, SourceFreshness, UnmappedItem
+from .models import (
+    OverlapType,
+    RejectedTrackerRun,
+    RunSummary,
+    SourceFreshness,
+    TrackerRunInfo,
+    UnmappedItem,
+)
 from .crosswalk import Crosswalk
 from .overlap import MemberTrade, QuarterFiling, build_overlaps, quarter_of
 from .sources import lda, ptr
@@ -94,21 +102,44 @@ async def main() -> None:
 
         # --- Parallel fetch: roster + PTR datasets + every LDA quarter ---
         fetched_at = datetime.now(timezone.utc)
-        results = await asyncio.gather(
-            load_members(store),
-            *(ptr.fetch_latest_items(chamber) for chamber in chambers),
-            *(
-                lda.fetch_quarter(
-                    quarter,
-                    max_concurrency=max_concurrency,
-                    max_pages=lda_max_pages,
-                    api_key=lda_key,
-                )
-                for quarter in quarters
-            ),
-        )
+        try:
+            results = await asyncio.gather(
+                load_members(store),
+                *(ptr.fetch_tracker_items(chamber, quarters) for chamber in chambers),
+                *(
+                    lda.fetch_quarter(
+                        quarter,
+                        max_concurrency=max_concurrency,
+                        max_pages=lda_max_pages,
+                        api_key=lda_key,
+                    )
+                    for quarter in quarters
+                ),
+            )
+        except ptr.PTRSourceError as exc:
+            # No suitable tracker run (or the tracker API is unreachable):
+            # fail loudly rather than emit a "no overlaps" result computed
+            # from partial or missing data.
+            Actor.log.error("Cannot proceed: %s", exc)
+            await Actor.set_status_message(str(exc)[:500], is_terminal=True)
+            raise
         (members, unmapped_committees) = results[0]
-        ptr_items_per_chamber = results[1 : 1 + len(chambers)]
+        ptr_fetches = results[1 : 1 + len(chambers)]
+        ptr_items_per_chamber = [items for items, _ in ptr_fetches]
+        tracker_runs = {
+            chamber: TrackerRunInfo(
+                run_id=run.run_id,
+                dataset_id=run.dataset_id,
+                finished_at=run.finished_at,
+                run_summary=run.run_summary,
+                warnings=run.warnings,
+                rejected_newer_runs=[
+                    RejectedTrackerRun(run_id=rid, reasons=reasons)
+                    for rid, reasons in run.rejected
+                ],
+            )
+            for chamber, (_, run) in zip(chambers, ptr_fetches)
+        }
         lda_quarter_results: list[lda.QuarterResult] = results[1 + len(chambers) :]
         lda_per_quarter = [r.filings for r in lda_quarter_results]
         lda_throttled = any(r.throttled for r in lda_quarter_results)
@@ -120,8 +151,19 @@ async def main() -> None:
 
         # --- Adapt trades (needs the member index for name resolution) ---
         adapter = ptr.AdapterResult()
+        ptr_sources: dict[str, dict[str, int]] = {}
+        partials: dict[str, ptr.AdapterResult] = {}
         for chamber, items in zip(chambers, ptr_items_per_chamber):
             partial = ptr.adapt_rows(items, members)
+            partials[chamber] = partial
+            ptr_sources[chamber] = {
+                "rows_read": partial.rows_read,
+                "trades_mapped": len(partial.member_trades),
+                "rows_skipped": len(partial.skipped),
+                "names_unresolved": len(partial.unresolved_names),
+            }
+            adapter.rows_read += partial.rows_read
+            adapter.name_fallback_names.extend(partial.name_fallback_names)
             adapter.member_trades.extend(partial.member_trades)
             adapter.skipped.extend(partial.skipped)
             adapter.unresolved_names.extend(partial.unresolved_names)
@@ -138,6 +180,12 @@ async def main() -> None:
             mt for mt in adapter.member_trades
             if quarter_of(mt.trade.transaction_date) in quarter_set
         ]
+        for chamber, partial in partials.items():
+            ptr_sources[chamber]["trades_in_quarters"] = sum(
+                1 for mt in partial.member_trades
+                if quarter_of(mt.trade.transaction_date) in quarter_set
+            )
+        Actor.log.info("PTR intake by chamber: %s", ptr_sources)
         Actor.log.info(
             "Trades in scope: %d of %d (quarters %s)",
             len(trades), len(adapter.member_trades), quarters,
@@ -187,6 +235,13 @@ async def main() -> None:
             *(UnmappedItem(kind="member_name", value=v)
               for v in adapter.unresolved_names),
         ]
+        if adapter.name_fallback_names:
+            Actor.log.warning(
+                "Name fallback used for %d member(s) with no usable "
+                "member_bioguide_id: %s",
+                len(adapter.name_fallback_names),
+                ", ".join(adapter.name_fallback_names),
+            )
         lda_amount_outliers = sum(
             1 for filing in filings if filing.filing.amount_outlier
         )
@@ -202,6 +257,14 @@ async def main() -> None:
                 SourceFreshness(source="congress_trades_actors", fetched_at=fetched_at),
                 SourceFreshness(source="congress_legislators", fetched_at=fetched_at),
             ],
+            member_resolution=dict(
+                Counter(mt.trade.member_resolution.value for mt in trades)
+            ),
+            ptr_sources=ptr_sources,
+            tracker_runs=tracker_runs,
+            ptr_skip_reasons=dict(
+                Counter(sk.reason for sk in adapter.skipped)
+            ),
             lda_throttled=lda_throttled,
         )
         await store.set_value("RUN_SUMMARY", summary.model_dump(mode="json"))

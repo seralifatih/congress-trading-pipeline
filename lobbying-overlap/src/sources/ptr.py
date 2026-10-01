@@ -24,15 +24,21 @@ The two actors emit different schemas:
 
 Rows are dispatched on which name field is present.
 
-ptr_url: neither schema carries a per-filing URL today. The adapter uses
-a `ptr_url` / `filing_url` field when the source actors start emitting
-one, and falls back to the official disclosure search portal for the
-chamber. Upgrading the actors later improves traceability without
-breaking this adapter.
+ptr_url: House rows carry `pdf_url`, the filing's own PDF — passed through
+(`ptr_url_kind: "document"`). Senate rows have `pdf_url: null` on every
+parsed row (only placeholder rows carry one), so Senate trades get the
+generic search portal (`ptr_url_kind: "portal_fallback"`). The Senate
+source does identify each filing by UUID (`filing_id`, carried as
+`ptr_filing_id`) and links its detail pages as /search/view/ptr/<uuid>/,
+but efdsearch.senate.gov is session-gated and could not be reached to
+confirm that path resolves, so no URL is synthesized from it.
+`ptr_filing_id` is the tracker's `filing_id`; the row hash (`id`) is kept
+separately as `tracker_row_id`.
 
-Member attribution: source rows carry display names, not bioguide ids.
-The adapter resolves names against the legislators index; unresolved
-names are reported, never silently dropped.
+Member attribution: trackers emit `member_bioguide_id`; it is used when
+present and in the roster. Otherwise the adapter falls back to resolving
+the display name and marks the trade `member_resolution: "name"`.
+Unresolved rows are reported, never silently dropped.
 
 Standalone use (maps a local JSON dump, no token needed):
 
@@ -55,19 +61,31 @@ import re
 import sys
 import unicodedata
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import httpx
 from pydantic import ValidationError
 
 if __package__:
-    from ..models import FilingType, Trade, TransactionType
+    from ..models import (
+        FilingType,
+        MemberResolution,
+        PtrUrlKind,
+        Trade,
+        TransactionType,
+    )
     from ..overlap import MemberTrade
     from .legislators import Member
 else:  # pragma: no cover - loose-script fallback
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from models import FilingType, Trade, TransactionType  # type: ignore[no-redefine]
+    from models import (  # type: ignore[no-redefine]
+        FilingType,
+        MemberResolution,
+        PtrUrlKind,
+        Trade,
+        TransactionType,
+    )
     from overlap import MemberTrade  # type: ignore[no-redefine]
     from sources.legislators import Member  # type: ignore[no-redefine]
 
@@ -95,13 +113,17 @@ MAX_RETRIES = 3
 BACKOFF_BASE = 1.0
 BACKOFF_CAP = 20.0
 
+# Trackers emit buy/sell/exchange; the long forms are accepted for older
+# datasets and raw source labels.
 _TX_TYPE_MAP: dict[str, TransactionType] = {
-    "purchase": TransactionType.purchase,
-    "buy": TransactionType.purchase,
-    "sell": TransactionType.sale,
-    "sale": TransactionType.sale,
-    "sale_full": TransactionType.sale,
-    "sale_partial": TransactionType.sale,
+    "buy": TransactionType.buy,
+    "purchase": TransactionType.buy,
+    "sell": TransactionType.sell,
+    "sale": TransactionType.sell,
+    "sale_full": TransactionType.sell,
+    "sale_partial": TransactionType.sell,
+    "sale (full)": TransactionType.sell,
+    "sale (partial)": TransactionType.sell,
     "exchange": TransactionType.exchange,
 }
 
@@ -124,6 +146,9 @@ class AdapterResult:
     member_trades: list[MemberTrade] = field(default_factory=list)
     unresolved_names: list[str] = field(default_factory=list)
     skipped: list[SkippedRow] = field(default_factory=list)
+    rows_read: int = 0
+    # Display names attributed via the name fallback (no usable bioguide id).
+    name_fallback_names: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -234,11 +259,13 @@ def _parse_date(raw: object) -> date | None:
 
 
 def _filing_type(raw: object) -> FilingType | None:
-    """Source rows carry 'original' | 'amendment' | null verbatim (same
-    vocabulary the House/Senate pipelines use) — pass through, never guess."""
-    if raw == "original":
+    """Source rows carry 'original' | 'amendment' | null (same vocabulary
+    the House/Senate pipelines use) — pass through, never guess. null
+    means the tracker's source row didn't state a filing status."""
+    value = raw.strip().lower() if isinstance(raw, str) else raw
+    if value == "original":
         return FilingType.original
-    if raw == "amendment":
+    if value == "amendment":
         return FilingType.amendment
     return None
 
@@ -251,9 +278,9 @@ def _row_chamber(row: dict) -> str | None:
     return None
 
 
-def map_row(row: dict) -> tuple[str, Trade] | SkippedRow:
-    """Map one source row to (display_name, Trade), or a SkippedRow with
-    the reason. Pure — no I/O."""
+def map_row(row: dict) -> tuple[str, str | None, Trade] | SkippedRow:
+    """Map one source row to (display_name, tracker_bioguide_id, Trade), or
+    a SkippedRow with the reason. Pure — no I/O."""
     row_id = str(row.get("id", "<no id>"))
 
     chamber = _row_chamber(row)
@@ -287,16 +314,23 @@ def map_row(row: dict) -> tuple[str, Trade] | SkippedRow:
     if amount is None:
         return SkippedRow(row_id, "missing amount range")
 
-    ptr_url = (
-        row.get("ptr_url")
-        or row.get("filing_url")
-        or FALLBACK_PTR_URL[chamber]
+    doc_url = row.get("pdf_url") or row.get("ptr_url") or row.get("filing_url")
+    ptr_url = str(doc_url) if doc_url else FALLBACK_PTR_URL[chamber]
+    ptr_url_kind = PtrUrlKind.document if doc_url else PtrUrlKind.portal_fallback
+    filing_id = row.get("filing_id")
+    bioguide_raw = row.get("member_bioguide_id")
+    bioguide_in_row = (
+        bioguide_raw.strip()
+        if isinstance(bioguide_raw, str) and bioguide_raw.strip()
+        else None
     )
 
     try:
         trade = Trade(
-            ptr_filing_id=row_id,
-            ptr_url=str(ptr_url),
+            ptr_filing_id=str(filing_id) if filing_id else row_id,
+            tracker_row_id=row_id,
+            ptr_url=ptr_url,
+            ptr_url_kind=ptr_url_kind,
             ticker=ticker,
             transaction_type=tx_type,
             amount_range=amount,
@@ -307,7 +341,7 @@ def map_row(row: dict) -> tuple[str, Trade] | SkippedRow:
     except ValidationError as exc:
         # e.g. disclosure before transaction — bad source data.
         return SkippedRow(row_id, f"validation: {exc.errors()[0]['msg']}")
-    return str(name), trade
+    return str(name), bioguide_in_row, trade
 
 
 def _flatten_items(items: list[dict]) -> list[dict]:
@@ -329,34 +363,52 @@ def adapt_rows(items: list[dict], members: dict[str, Member]) -> AdapterResult:
     resolver = NameResolver(members)
     result = AdapterResult()
     unresolved: set[str] = set()
+    fallback_names: set[str] = set()
 
     fallback_urls = set(FALLBACK_PTR_URL.values())
     for row in _flatten_items(items):
+        result.rows_read += 1
         mapped = map_row(row)
         if isinstance(mapped, SkippedRow):
             result.skipped.append(mapped)
             continue
-        name, trade = mapped
-        bioguide = resolver.resolve(name)
-        if bioguide is None:
-            unresolved.add(name)
-            continue
-        # The fallback ptr_url is chosen from the ROW shape, but both
-        # source actors emit house-shaped rows for members of either
+        name, row_bioguide, trade = mapped
+        # Prefer the tracker's bioguide id; fall back to the display name
+        # (also when the id is absent from the current-member roster).
+        if row_bioguide is not None and row_bioguide in members:
+            bioguide = row_bioguide
+            resolution = MemberResolution.bioguide_id
+        else:
+            resolved = resolver.resolve(name)
+            if resolved is None:
+                unresolved.add(name)
+                continue
+            bioguide = resolved
+            resolution = MemberResolution.name
+            fallback_names.add(name)
+        # The fallback portal URL is chosen from the ROW shape, but both
+        # tracker actors emit the same row shape for members of either
         # chamber. Once the member is resolved we know the real chamber —
         # point the fallback at the right disclosure portal. Row-provided
-        # URLs are never touched.
+        # document URLs are never touched.
         member = members[bioguide]
         expected = FALLBACK_PTR_URL[member.chamber.value]
+        updates: dict[str, object] = {"member_resolution": resolution}
         if trade.ptr_url in fallback_urls and trade.ptr_url != expected:
-            trade = trade.model_copy(update={"ptr_url": expected})
+            updates["ptr_url"] = expected
+        trade = trade.model_copy(update=updates)
         result.member_trades.append(MemberTrade(bioguide, trade))
 
     result.unresolved_names = sorted(unresolved)
+    result.name_fallback_names = sorted(fallback_names)
     logger.info(
-        "ptr adapter: %d trades mapped, %d rows skipped, %d names unresolved",
-        len(result.member_trades), len(result.skipped), len(result.unresolved_names),
+        "ptr adapter: %d rows, %d trades mapped, %d skipped, %d names "
+        "unresolved, %d names attributed by name fallback",
+        result.rows_read, len(result.member_trades), len(result.skipped),
+        len(result.unresolved_names), len(result.name_fallback_names),
     )
+    for fb_name in result.name_fallback_names:
+        logger.info("ptr adapter: name fallback used for %r", fb_name)
     for skipped_row in result.skipped:
         logger.debug("ptr adapter skipped %s: %s", skipped_row.row_id, skipped_row.reason)
     return result
@@ -395,14 +447,154 @@ async def _api_get(client: httpx.AsyncClient, url: str, params: dict) -> httpx.R
     raise PTRSourceError(f"apify api failed after retries: {last_exc}")
 
 
-async def fetch_latest_items(
+# A tracker run is only a trustworthy input if it was a full, unfiltered
+# pull of the window being asked about. Anything else (a members-filtered
+# test run, a truncated run, a debug-limited run, a window that misses the
+# quarter) silently yields a dataset that LOOKS fine but is partial — the
+# overlap would then report "no overlaps" for the wrong reason.
+MAX_RUN_CANDIDATES = 15
+# A trade made on the last day of a quarter can be filed up to ~45 days
+# later; a tracker window ending sooner than that may miss late filings.
+LATE_FILING_GRACE_DAYS = 45
+
+_FILTER_COUNTERS = (
+    "skippedByMemberCount",
+    "filteredByTickerCount",
+    "skippedByTransactionDateCount",
+    "filteredByTransactionDateCount",
+    "placeholdersWithheld",
+    "placeholdersExcludedCount",
+)
+_FILTER_INPUTS = ("members", "tickers", "transactionDateFrom", "transactionDateTo")
+
+ScalarMap = dict[str, str | int | float | bool | None]
+
+
+def _quarter_bounds(quarter: str) -> tuple[date, date]:
+    """'2026-Q2' -> (2026-04-01, 2026-06-30)."""
+    year, q = int(quarter[:4]), int(quarter[-1])
+    start = date(year, 3 * (q - 1) + 1, 1)
+    end = (
+        date(year + 1, 1, 1) if q == 4 else date(year, 3 * q + 1, 1)
+    ) - timedelta(days=1)
+    return start, end
+
+
+@dataclass(frozen=True)
+class RunVerdict:
+    """Outcome of assessing one tracker run. Empty `reasons` = suitable."""
+
+    reasons: list[str]
+    warnings: list[str]
+
+
+@dataclass(frozen=True)
+class TrackerRun:
+    """The tracker run whose dataset was consumed, kept for provenance."""
+
+    chamber: str
+    run_id: str
+    dataset_id: str
+    finished_at: str | None
+    run_summary: ScalarMap
+    warnings: list[str]
+    # (run_id, reasons) for every newer run that was passed over.
+    rejected: list[tuple[str, list[str]]]
+
+
+def _scalars(record: object) -> ScalarMap:
+    if not isinstance(record, dict):
+        return {}
+    return {
+        str(k): v
+        for k, v in record.items()
+        if v is None or isinstance(v, (str, int, float, bool))
+    }
+
+
+def assess_run(
+    run_summary: object, run_input: object, quarters: list[str]
+) -> RunVerdict:
+    """Decide whether a tracker run's dataset can stand in for a full pull
+    of `quarters`. Pure — takes the run's RUN_SUMMARY and INPUT records.
+
+    Rejects: no RUN_SUMMARY (pre-1.5 tracker, cannot verify); truncated;
+    any filter applied (counters or input); debug-limited; a filing-date
+    window that does not cover the quarters. Warns (does not reject) when
+    the window ends before late filings for the last quarter could exist.
+    """
+    reasons: list[str] = []
+    warnings: list[str] = []
+
+    if not isinstance(run_summary, dict):
+        return RunVerdict(["no RUN_SUMMARY record (cannot verify completeness)"], [])
+
+    if run_summary.get("truncated") is True:
+        reasons.append(
+            f"truncated ({run_summary.get('reason') or 'max_total_charge_reached'}; "
+            f"{run_summary.get('rowsNotEmitted')} rows not written)"
+        )
+    for key in _FILTER_COUNTERS:
+        value = run_summary.get(key)
+        if isinstance(value, (int, float)) and value > 0:
+            reasons.append(f"filter applied: {key}={value}")
+
+    inp = run_input if isinstance(run_input, dict) else {}
+    for key in _FILTER_INPUTS:
+        value = inp.get(key)
+        if value:  # non-empty list / non-empty string
+            reasons.append(f"filter in run input: {key}={value!r}")
+    limit = inp.get("debugPtrLimit")
+    if isinstance(limit, (int, float)) and limit > 0:
+        reasons.append(f"debugPtrLimit={limit} in run input")
+
+    window_from = _parse_date(run_summary.get("windowFrom"))
+    window_to = _parse_date(run_summary.get("windowTo"))
+    if window_from is None or window_to is None:
+        reasons.append("RUN_SUMMARY has no windowFrom/windowTo")
+    else:
+        bounds = [_quarter_bounds(q) for q in quarters]
+        need_from = min(s for s, _ in bounds)
+        need_to = max(e for _, e in bounds)
+        if window_from > need_from or window_to < need_to:
+            reasons.append(
+                f"filing-date window {window_from}..{window_to} does not cover "
+                f"{need_from}..{need_to}"
+            )
+        elif window_to < need_to + timedelta(days=LATE_FILING_GRACE_DAYS):
+            warnings.append(
+                f"window ends {window_to}, less than {LATE_FILING_GRACE_DAYS} "
+                f"days after {need_to}: late filings may be missing"
+            )
+    return RunVerdict(reasons, warnings)
+
+
+async def _api_get_optional(
+    client: httpx.AsyncClient, url: str, params: dict
+) -> httpx.Response | None:
+    """Like _api_get, but a 404 is an answer (record absent), not an error."""
+    try:
+        return await _api_get(client, url, params)
+    except PTRSourceError as exc:
+        if " 404 " in str(exc):
+            return None
+        raise
+
+
+async def fetch_tracker_items(
     chamber: str,
+    quarters: list[str],
     *,
     token: str | None = None,
     timeout: float = DEFAULT_TIMEOUT,
-) -> list[dict]:
-    """Read all dataset items of the latest successful run of the given
-    chamber's trades actor."""
+) -> tuple[list[dict], TrackerRun]:
+    """Read the dataset of the most recent SUITABLE successful run of the
+    chamber's tracker actor.
+
+    Walks back through recent successful runs, skipping any that are
+    partial (see `assess_run`). Raises PTRSourceError — failing the run
+    loudly — if none of the most recent MAX_RUN_CANDIDATES is suitable.
+    """
     if chamber not in ACTORS:
         raise PTRSourceError(f"unknown chamber {chamber!r}; expected house/senate")
     token = token or os.environ.get(TOKEN_ENV)
@@ -413,18 +605,60 @@ async def fetch_latest_items(
     async with httpx.AsyncClient(
         timeout=httpx.Timeout(timeout), follow_redirects=True
     ) as client:
-        run_url = f"{APIFY_API}/acts/{ACTORS[chamber]}/runs/last"
-        logger.info("Fetching last successful run of %s", ACTORS[chamber])
-        run_resp = await _api_get(
-            client, run_url, {**params, "status": "SUCCEEDED"}
+        runs_resp = await _api_get(
+            client,
+            f"{APIFY_API}/acts/{ACTORS[chamber]}/runs",
+            {**params, "status": "SUCCEEDED", "desc": 1, "limit": MAX_RUN_CANDIDATES},
         )
-        run_data = run_resp.json().get("data") or {}
-        dataset_id = run_data.get("defaultDatasetId")
-        if not dataset_id:
-            raise PTRSourceError(
-                f"{ACTORS[chamber]}: no successful run with a dataset found"
-            )
+        candidates = (runs_resp.json().get("data") or {}).get("items") or []
 
+        async def record(kv_id: str, key: str) -> object:
+            resp = await _api_get_optional(
+                client, f"{APIFY_API}/key-value-stores/{kv_id}/records/{key}", params
+            )
+            if resp is None:
+                return None
+            try:
+                return resp.json()
+            except ValueError:
+                return None
+
+        rejected: list[tuple[str, list[str]]] = []
+        chosen: dict | None = None
+        chosen_summary: object = None
+        verdict = RunVerdict([], [])
+        for run in candidates:
+            run_id = str(run.get("id"))
+            kv_id = run.get("defaultKeyValueStoreId")
+            if not kv_id or not run.get("defaultDatasetId"):
+                rejected.append((run_id, ["run has no default dataset/store"]))
+                continue
+            summary = await record(kv_id, "RUN_SUMMARY")
+            run_input = await record(kv_id, "INPUT")
+            verdict = assess_run(summary, run_input, quarters)
+            if verdict.reasons:
+                logger.warning(
+                    "%s run %s skipped: %s", chamber, run_id, "; ".join(verdict.reasons)
+                )
+                rejected.append((run_id, verdict.reasons))
+                continue
+            chosen, chosen_summary = run, summary
+            break
+
+        if chosen is None:
+            detail = (
+                "; ".join(f"{rid}: {', '.join(r)}" for rid, r in rejected)
+                or "no successful runs"
+            )
+            raise PTRSourceError(
+                f"{ACTORS[chamber]}: no suitable tracker run for {quarters} among "
+                f"the {len(candidates)} most recent successful runs ({detail}). "
+                f"Run the tracker unfiltered over the quarter(s) first."
+            )
+        for warning in verdict.warnings:
+            logger.warning("%s run %s: %s", chamber, chosen["id"], warning)
+
+        dataset_id = chosen["defaultDatasetId"]
         items: list[dict] = []
         offset, limit = 0, 1000
         while True:
@@ -440,27 +674,44 @@ async def fetch_latest_items(
             if len(batch) < limit:
                 break
             offset += limit
-        logger.info("%s: %d dataset items", ACTORS[chamber], len(items))
-        return items
+        logger.info(
+            "%s: using run %s (%d dataset items, %d newer run(s) skipped)",
+            ACTORS[chamber], chosen["id"], len(items), len(rejected),
+        )
+        return items, TrackerRun(
+            chamber=chamber,
+            run_id=str(chosen["id"]),
+            dataset_id=str(dataset_id),
+            finished_at=chosen.get("finishedAt"),
+            run_summary=_scalars(chosen_summary),
+            warnings=list(verdict.warnings),
+            rejected=rejected,
+        )
 
 
 async def fetch_member_trades(
     members: dict[str, Member],
+    quarters: list[str],
     chambers: list[str] | None = None,
     *,
     token: str | None = None,
     timeout: float = DEFAULT_TIMEOUT,
 ) -> AdapterResult:
-    """One-call API for main.py: read both actors, adapt everything."""
+    """One-call API: read the suitable tracker run per chamber, adapt."""
     chambers = chambers or list(ACTORS)
     combined = AdapterResult()
     for chamber in chambers:
-        items = await fetch_latest_items(chamber, token=token, timeout=timeout)
+        items, _run = await fetch_tracker_items(
+            chamber, quarters, token=token, timeout=timeout
+        )
         partial = adapt_rows(items, members)
         combined.member_trades.extend(partial.member_trades)
         combined.skipped.extend(partial.skipped)
         combined.unresolved_names.extend(partial.unresolved_names)
+        combined.name_fallback_names.extend(partial.name_fallback_names)
+        combined.rows_read += partial.rows_read
     combined.unresolved_names = sorted(set(combined.unresolved_names))
+    combined.name_fallback_names = sorted(set(combined.name_fallback_names))
     return combined
 
 
@@ -486,7 +737,7 @@ async def _main_async(args: argparse.Namespace) -> int:
             items = [items]
         result = adapt_rows(items, members)
     else:
-        result = await fetch_member_trades(members, [args.actor])
+        result = await fetch_member_trades(members, args.quarters, [args.actor])
 
     payload = {
         "member_trades": [
@@ -523,6 +774,10 @@ def main() -> int:
         "--actor", choices=list(ACTORS), help="Read live via Apify API"
     )
     parser.add_argument("--out", help="Write JSON here instead of stdout")
+    parser.add_argument(
+        "--quarters", nargs="+", default=[],
+        help="Quarters the tracker run must cover, e.g. 2026-Q2 (--actor only)",
+    )
     parser.add_argument(
         "--cache-dir",
         default=str(Path(__file__).resolve().parents[2] / ".cache"),

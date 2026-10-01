@@ -104,12 +104,19 @@ def _best_mapping(a: Mapping, b: Mapping) -> Mapping:
     return a if ka <= kb else b
 
 
-def _filing_evidence_key(filing: LobbyingFiling) -> tuple[bool, float, str]:
-    """Sort key for capping: largest reported amounts first, unreported
-    (null) amounts last, uuid as the deterministic tiebreak."""
+def _filing_evidence_key(
+    filing: LobbyingFiling,
+) -> tuple[bool, float, bool, int, str]:
+    """Sort key for capping: largest reported amounts first. Filings with a
+    null amount (all of them, for registrations) fall back to a fixed
+    order — most recently posted first, then uuid — so the capped list is
+    deterministic even when no amount is available to rank by."""
+    posted = filing.filing_posted_date
     return (
         filing.amount_reported is None,
         -(filing.amount_reported or 0.0),
+        posted is None,
+        -(posted.toordinal() if posted else 0),
         filing.lda_filing_uuid,
     )
 
@@ -148,6 +155,8 @@ def build_overlaps(
     # --- trade side: (bioguide, quarter, sector) -> trades + best rule ---
     grouped_trades: dict[tuple[str, str, str], list[Trade]] = {}
     primary_rule: dict[tuple[str, str, str], Mapping] = {}
+    # (bioguide, tracker_row_id) -> the sector this trade is "primary" in.
+    primary_sector: dict[tuple[str, str], str] = {}
 
     for member_trade in trades:
         bioguide = member_trade.bioguide_id
@@ -161,6 +170,10 @@ def build_overlaps(
             unmapped_tickers.add(ticker)
             continue
         quarter = quarter_of(trade.transaction_date)
+        best = min(
+            mappings, key=lambda m: (_CONFIDENCE_ORDER[m.confidence], m.rule_id)
+        )
+        primary_sector[(bioguide, trade.tracker_row_id)] = best.sector
         for mapping in mappings:
             key = (bioguide, quarter, mapping.sector)
             grouped_trades.setdefault(key, []).append(trade)
@@ -230,8 +243,20 @@ def build_overlaps(
         )
 
         record_trades = sorted(
-            grouped_trades[key],
-            key=lambda t: (t.transaction_date, t.ticker, t.ptr_filing_id),
+            (
+                t.model_copy(
+                    update={
+                        "is_primary_mapping": primary_sector[
+                            (bioguide, t.tracker_row_id)
+                        ]
+                        == sector
+                    }
+                )
+                for t in grouped_trades[key]
+            ),
+            key=lambda t: (
+                t.transaction_date, t.ticker, t.ptr_filing_id, t.tracker_row_id
+            ),
         )
         earliest = min(record_trades, key=lambda t: t.transaction_date)
         # An amendment can be filed long after the original PTR for reasons
@@ -273,6 +298,7 @@ def build_overlaps(
                 sector_lobbying_filing_count=len(all_filings),
                 committees=matched_committees,
                 overlap_type=overlap_type,
+                is_primary_mapping=any(t.is_primary_mapping for t in record_trades),
                 disclosure_lag_days=lag_days,
             )
         )

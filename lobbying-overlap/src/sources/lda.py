@@ -32,15 +32,16 @@ import re
 import sys
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from datetime import date
 
 import httpx
 
 # Support both `python -m src.sources.lda` (package) and direct execution.
 if __package__:
-    from ..models import LobbyingFiling
+    from ..models import AmountStatus, LobbyingFiling
 else:  # pragma: no cover - only when run as a loose script
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from models import LobbyingFiling  # type: ignore[no-redefine]
+    from models import AmountStatus, LobbyingFiling  # type: ignore[no-redefine]
 
 logger = logging.getLogger(__name__)
 
@@ -352,7 +353,12 @@ async def iter_raw_filings(
             logger.info("LDA %s: %d filings, single page", quarter, count)
             return
 
-        total_pages = -(-count // page_size)  # ceil
+        # The server may cap page size below what we asked for (observed:
+        # anonymous access returns 25 per page for page_size=100). Page
+        # count must come from what actually came back, or most pages are
+        # silently never requested.
+        effective_page_size = min(page_size, len(results))
+        total_pages = -(-count // effective_page_size)  # ceil
         if max_pages is not None:
             total_pages = min(total_pages, max_pages)
             logger.info(
@@ -420,13 +426,36 @@ def _parse_amount(raw: object) -> float | None:
         return None
 
 
+def _posted_date(raw: object) -> date | None:
+    """LDA dt_posted ('2026-04-14T13:52:41-04:00') -> its calendar date."""
+    if not isinstance(raw, str) or len(raw) < 10:
+        return None
+    try:
+        return date.fromisoformat(raw[:10])
+    except ValueError:
+        return None
+
+
+def _amount_status(filing_type: str | None, amount: float | None) -> AmountStatus:
+    if amount is not None:
+        return AmountStatus.reported
+    # LD-1 registrations (RR) and their amendments (RA) have no income or
+    # expenses fields at all — null is structural, not missing data.
+    if filing_type and filing_type.upper().startswith("R"):
+        return AmountStatus.not_applicable_registration
+    return AmountStatus.not_reported
+
+
 def map_filing(raw: dict) -> LobbyingFiling | None:
     """Map one raw LDA filing dict to a `LobbyingFiling`.
 
     Returns None (and logs) for filings with no reportable issue codes —
     LD-2s can carry zero lobbying activities and are not useful for the join.
     `amount_reported` prefers income (lobbying firms) then expenses
-    (self-filers); either may be null.
+    (self-filers). Both are null on LD-1 registrations (RR/RA — no such
+    fields on the form) and on some reports; `amount_reported_status`
+    says which. Verified against lda.gov: Q-type reports populate
+    income/expenses; RR filings never do.
     """
     registrant = raw.get("registrant") or {}
     client = raw.get("client") or {}
@@ -466,7 +495,12 @@ def map_filing(raw: dict) -> LobbyingFiling | None:
             registrant=registrant.get("name") or "<unknown registrant>",
             client=client.get("name") or "<unknown client>",
             issue_codes=issue_codes,
+            filing_type=raw.get("filing_type") or None,
+            filing_posted_date=_posted_date(raw.get("dt_posted")),
             amount_reported=amount_reported,
+            amount_reported_status=_amount_status(
+                raw.get("filing_type") or None, amount_reported
+            ),
             amount_outlier=amount_outlier,
         )
     except KeyError as exc:

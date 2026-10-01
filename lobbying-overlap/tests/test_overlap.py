@@ -20,6 +20,7 @@ from src.models import (
     MappingConfidence,
     OverlapType,
     Party,
+    PtrUrlKind,
     Trade,
     TransactionType,
 )
@@ -73,9 +74,11 @@ def make_trade(
 ) -> Trade:
     return Trade(
         ptr_filing_id=filing_id,
+        tracker_row_id=f"row-{filing_id}",
         ptr_url=f"https://example.gov/{filing_id}",
+        ptr_url_kind=PtrUrlKind.document,
         ticker=ticker,
-        transaction_type=TransactionType.purchase,
+        transaction_type=TransactionType.buy,
         amount_range="$1,001 - $15,000",
         transaction_date=tx,
         disclosure_date=disclosed,

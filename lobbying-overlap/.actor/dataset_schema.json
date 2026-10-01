@@ -15,6 +15,7 @@
             "trades",
             "lobbying",
             "sector_lobbying_filing_count",
+            "match_level",
             "overlap_type",
             "disclosure_lag_days"
         ],
@@ -33,13 +34,20 @@
             "chamber": {
                 "type": "string",
                 "title": "Chamber",
-                "enum": ["house", "senate"],
+                "enum": [
+                    "house",
+                    "senate"
+                ],
                 "example": "house"
             },
             "party": {
                 "type": "string",
                 "title": "Party",
-                "enum": ["D", "R", "I"],
+                "enum": [
+                    "D",
+                    "R",
+                    "I"
+                ],
                 "example": "R"
             },
             "state": {
@@ -70,17 +78,41 @@
                 "type": "string",
                 "title": "Mapping confidence",
                 "description": "Confidence of the strongest rule that produced this record. Records whose strongest rule is 'low' are excluded from the dataset entirely (see actor README) — this field will never be 'low' here.",
-                "enum": ["high", "medium"],
+                "enum": [
+                    "high",
+                    "medium"
+                ],
                 "example": "high"
+            },
+            "match_level": {
+                "type": "string",
+                "title": "Match level",
+                "description": "Always 'sector': trades and lobbying are matched on (quarter, sector) via the crosswalk, never by issuer. Lobbying filings are not about the company traded.",
+                "enum": [
+                    "sector"
+                ],
+                "example": "sector"
             },
             "overlap_type": {
                 "type": "string",
                 "title": "Overlap type",
-                "enum": ["committee_match", "sector_match_only"],
+                "enum": [
+                    "committee_match",
+                    "sector_match_only"
+                ],
                 "example": "committee_match"
             },
+            "is_primary_mapping": {
+                "type": "boolean",
+                "title": "Is primary mapping",
+                "description": "True if at least one trade in this record is at its primary sector mapping. A multi-sector ticker (HD -> retail, construction) appears in several records; count only primary ones to count each trade once.",
+                "example": true
+            },
             "disclosure_lag_days": {
-                "type": ["integer", "null"],
+                "type": [
+                    "integer",
+                    "null"
+                ],
                 "title": "Disclosure lag (days)",
                 "description": "Days from the earliest trade's transaction date to its disclosure date. Null whenever that trade's filing_type is 'amendment' — an amendment's gap to the transaction date is not a meaningful disclosure lag (see actor README).",
                 "example": 30
@@ -94,12 +126,12 @@
             "trades": {
                 "type": "array",
                 "title": "Trades",
-                "description": "Every trade by this member in this sector/quarter. Each item carries ptr_filing_id, ptr_url, ticker, transaction_type, amount_range, transaction_date, disclosure_date, and filing_type ('original' | 'amendment' | null, same vocabulary as the House/Senate pipelines)."
+                "description": "Every trade by this member in this sector/quarter. Each item carries ptr_filing_id (the filing's own id), tracker_row_id (tracker dataset row hash), ptr_url, ptr_url_kind ('document' | 'portal_fallback'), member_resolution ('bioguide_id' | 'name'), is_primary_mapping, ticker, transaction_type ('buy' | 'sell' | 'exchange'), amount_range, transaction_date, disclosure_date, and filing_type ('original' | 'amendment' | null, same vocabulary as the House/Senate pipelines)."
             },
             "lobbying": {
                 "type": "array",
                 "title": "Lobbying filings",
-                "description": "Lobbying filings in this sector/quarter, capped to the largest by reported amount. Each item carries lda_filing_uuid, lda_url, registrant, client, issue_codes, amount_reported, and amount_outlier (true when amount_reported looks like a data-entry error in the source, e.g. >= $10M on a single LD-2 — flagged, never dropped or zeroed)."
+                "description": "Lobbying filings in this sector/quarter (sector-wide, not issuer-specific), capped to the largest by reported amount; null amounts are ordered by filing_posted_date then uuid. Each item carries lda_filing_uuid, lda_url, registrant, client, issue_codes, filing_type, filing_posted_date, amount_reported, amount_reported_status ('reported' | 'not_applicable_registration' | 'not_reported'), and amount_outlier (true when amount_reported looks like a data-entry error in the source, e.g. >= $10M on a single LD-2 — flagged, never dropped or zeroed)."
             },
             "committees": {
                 "type": "array",
@@ -119,6 +151,7 @@
                     "state",
                     "quarter",
                     "sector",
+                    "match_level",
                     "overlap_type",
                     "mapping_confidence",
                     "disclosure_lag_days",
@@ -128,16 +161,39 @@
             "display": {
                 "component": "table",
                 "properties": {
-                    "member_name": { "label": "Member" },
-                    "chamber": { "label": "Chamber" },
-                    "party": { "label": "Party" },
-                    "state": { "label": "State" },
-                    "quarter": { "label": "Quarter" },
-                    "sector": { "label": "Sector" },
-                    "overlap_type": { "label": "Overlap type" },
-                    "mapping_confidence": { "label": "Confidence" },
-                    "disclosure_lag_days": { "label": "Disclosure lag (days)" },
-                    "sector_lobbying_filing_count": { "label": "Sector lobbying filings" }
+                    "member_name": {
+                        "label": "Member"
+                    },
+                    "chamber": {
+                        "label": "Chamber"
+                    },
+                    "party": {
+                        "label": "Party"
+                    },
+                    "state": {
+                        "label": "State"
+                    },
+                    "quarter": {
+                        "label": "Quarter"
+                    },
+                    "sector": {
+                        "label": "Sector"
+                    },
+                    "overlap_type": {
+                        "label": "Overlap type"
+                    },
+                    "mapping_confidence": {
+                        "label": "Confidence"
+                    },
+                    "disclosure_lag_days": {
+                        "label": "Disclosure lag (days)"
+                    },
+                    "sector_lobbying_filing_count": {
+                        "label": "Sector lobbying filings"
+                    },
+                    "match_level": {
+                        "label": "Match level"
+                    }
                 }
             }
         }

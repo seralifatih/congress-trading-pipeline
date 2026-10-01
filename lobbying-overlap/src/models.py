@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from datetime import date
 from enum import Enum
+from typing import Literal
 
 from pydantic import (
     AwareDatetime,
@@ -61,9 +62,36 @@ class OverlapType(str, Enum):
 
 
 class TransactionType(str, Enum):
-    purchase = "purchase"
-    sale = "sale"
+    # Same vocabulary as the House/Senate tracker actors (buy/sell/exchange).
+    # Before 2.0 this actor emitted purchase/sale — see CHANGELOG.
+    buy = "buy"
+    sell = "sell"
     exchange = "exchange"
+
+
+class PtrUrlKind(str, Enum):
+    """What `Trade.ptr_url` points at — so a consumer never has to guess
+    whether the link is the filing itself or a generic landing page."""
+
+    document = "document"  # the filing's own PDF, as emitted by the tracker
+    portal_fallback = "portal_fallback"  # generic disclosure search page
+
+
+class MemberResolution(str, Enum):
+    """How a trade was attributed to a member."""
+
+    bioguide_id = "bioguide_id"  # tracker's member_bioguide_id (preferred)
+    name = "name"  # display-name fallback — less reliable
+
+
+class AmountStatus(str, Enum):
+    reported = "reported"
+    # LD-1 registrations (filing_type RR/RA) carry no income/expenses by
+    # design — the source is null because the form has no such field.
+    not_applicable_registration = "not_applicable_registration"
+    # A report-type filing whose income and expenses are both null in the
+    # source (e.g. below the reporting threshold, or not disclosed).
+    not_reported = "not_reported"
 
 
 class FilingType(str, Enum):
@@ -80,8 +108,38 @@ class Trade(BaseModel):
 
     model_config = _STRICT
 
-    ptr_filing_id: str = Field(min_length=1)
+    ptr_filing_id: str = Field(
+        min_length=1,
+        description="The filing's own id from the tracker (`filing_id`: House "
+        "DocID, Senate filing UUID) — shared by every trade in that filing. "
+        "Falls back to `tracker_row_id` only if the tracker row has no "
+        "filing_id.",
+    )
+    tracker_row_id: str = Field(
+        min_length=1,
+        description="The tracker dataset row's `id` (sha256 hash, one per "
+        "transaction row). Stable join key back to the tracker dataset.",
+    )
     ptr_url: str = Field(min_length=1)
+    ptr_url_kind: PtrUrlKind = Field(
+        description="'document' = the filing's own PDF (House); "
+        "'portal_fallback' = generic disclosure search page, used when the "
+        "tracker supplies no per-filing URL (all Senate rows today).",
+    )
+    member_resolution: MemberResolution = Field(
+        default=MemberResolution.bioguide_id,
+        description="How this trade was attributed to the member: the "
+        "tracker's member_bioguide_id, or a display-name fallback.",
+    )
+    is_primary_mapping: bool = Field(
+        default=True,
+        description="A ticker can map to several sectors (HD -> retail AND "
+        "construction), so one trade appears in several records. Exactly "
+        "one of those appearances has is_primary_mapping=true: the sector "
+        "with the strongest crosswalk rule (confidence high > medium > low, "
+        "then lexicographic rule_id). Count only primary appearances to "
+        "count each trade once.",
+    )
     ticker: str = Field(min_length=1)
     transaction_type: TransactionType
     amount_range: str = Field(
@@ -119,10 +177,27 @@ class LobbyingFiling(BaseModel):
         min_length=1,
         description="LDA general issue area codes, e.g. ['TAX', 'HCR'].",
     )
+    filing_type: str | None = Field(
+        default=None,
+        description="LDA filing type code, e.g. 'Q2' (quarterly report), "
+        "'Q2A' (amendment), 'RR' (registration), 'RA' (registration "
+        "amendment).",
+    )
+    filing_posted_date: date | None = Field(
+        default=None, description="Date the filing was posted (LDA dt_posted)."
+    )
     amount_reported: float | None = Field(
         default=None,
         ge=0.0,
-        description="Reported lobbying spend in USD; None if not disclosed.",
+        description="Reported lobbying spend in USD (income for lobbying "
+        "firms, else expenses for self-filers); None if the source is null "
+        "— see amount_reported_status for why.",
+    )
+    amount_reported_status: AmountStatus = Field(
+        default=AmountStatus.reported,
+        description="'reported' | 'not_applicable_registration' (LD-1 "
+        "registrations have no amount fields) | 'not_reported' (report "
+        "with null income and expenses at the source).",
     )
     amount_outlier: bool = Field(
         default=False,
@@ -183,6 +258,12 @@ class OverlapRecord(BaseModel):
         description="Two-letter USPS state code.",
     )
 
+    # What the join is keyed on. ALWAYS "sector": trades are matched to
+    # lobbying by crosswalk sector (ticker -> sector, LDA issue code ->
+    # sector), never by issuer. A lobbying filing in `lobbying` is NOT
+    # about the company whose stock was traded.
+    match_level: Literal["sector"] = "sector"
+
     # Time + sector join key
     quarter: str = Field(
         pattern=r"^\d{4}-Q[1-4]$",
@@ -215,6 +296,14 @@ class OverlapRecord(BaseModel):
     committees: list[CommitteeAssignment] = Field(default_factory=list)
 
     overlap_type: OverlapType
+
+    is_primary_mapping: bool = Field(
+        default=True,
+        description="True when at least one trade in this record is at its "
+        "primary sector mapping (see Trade.is_primary_mapping). Records "
+        "where it is false only exist because a multi-sector ticker also "
+        "maps here; drop them to avoid counting those trades twice.",
+    )
 
     disclosure_lag_days: NonNegativeInt | None = Field(
         description="Days from the earliest trade's transaction date to its "
@@ -264,6 +353,31 @@ class SourceFreshness(BaseModel):
     latest_record_date: date | None = None
 
 
+class RejectedTrackerRun(BaseModel):
+    """A newer tracker run that was passed over as unsuitable, and why."""
+
+    model_config = _STRICT
+
+    run_id: str = Field(min_length=1)
+    reasons: list[str] = Field(min_length=1)
+
+
+class TrackerRunInfo(BaseModel):
+    """Which tracker run's dataset was consumed for one chamber, with that
+    run's own RUN_SUMMARY, so any output can be traced to its exact input."""
+
+    model_config = _STRICT
+
+    run_id: str = Field(min_length=1)
+    dataset_id: str = Field(min_length=1)
+    finished_at: str | None = None
+    run_summary: dict[str, str | int | float | bool | None] = Field(
+        default_factory=dict
+    )
+    warnings: list[str] = Field(default_factory=list)
+    rejected_newer_runs: list[RejectedTrackerRun] = Field(default_factory=list)
+
+
 class RunSummary(BaseModel):
     """Written to the key-value store under RUN_SUMMARY. Describes coverage
     and gaps for one actor run — not part of the dataset itself."""
@@ -291,6 +405,29 @@ class RunSummary(BaseModel):
     )
     unmapped: list[UnmappedItem] = Field(default_factory=list)
     source_freshness: list[SourceFreshness] = Field(default_factory=list)
+    member_resolution: dict[str, NonNegativeInt] = Field(
+        default_factory=dict,
+        description="Trades attributed to members, by how: 'bioguide_id' "
+        "(tracker-supplied id) or 'name' (display-name fallback). A nonzero "
+        "'name' count means some tracker rows lacked a usable id.",
+    )
+    tracker_runs: dict[str, TrackerRunInfo] = Field(
+        default_factory=dict,
+        description="Per chamber: the tracker run whose dataset was used "
+        "(id, its RUN_SUMMARY) and any newer runs skipped as partial "
+        "(truncated, filtered, debug-limited, or window not covering the "
+        "quarters). The run fails if no recent run is suitable.",
+    )
+    ptr_sources: dict[str, dict[str, NonNegativeInt]] = Field(
+        default_factory=dict,
+        description="Per-chamber tracker intake: rows_read, trades_mapped, "
+        "rows_skipped, names_unresolved, trades_in_quarters. Explains "
+        "why a chamber contributed few or no records.",
+    )
+    ptr_skip_reasons: dict[str, NonNegativeInt] = Field(
+        default_factory=dict,
+        description="Tracker rows the adapter could not map, by reason.",
+    )
     lda_throttled: bool = Field(
         default=False,
         description="True if any LDA quarter gave up on a page after "

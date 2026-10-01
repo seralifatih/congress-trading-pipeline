@@ -1,5 +1,7 @@
 # Congress Lobbying × Trades Overlap
 
+> **Limitation — tracker runs are read from the account running this actor.** This actor currently reads the House and Senate tracker runs from the Apify account that runs it, so it only works for an account that has its own unfiltered tracker runs covering the requested quarters. An account without them gets a failed run. See "Tracker input requirements" below.
+
 **Cross-reference US federal lobbying disclosures with Congressional stock trading disclosures — one auditable record per overlap.**
 
 This actor joins two public disclosure systems that don't share keys: quarterly lobbying filings under the Lobbying Disclosure Act (LDA) and member stock transactions disclosed under the STOCK Act (PTR filings). It surfaces **same-quarter co-occurrence**: a member traded in sector X during a quarter in which sector X was the subject of lobbying activity — and, where the member sits on a committee with jurisdiction over that sector, it says so.
@@ -7,6 +9,8 @@ This actor joins two public disclosure systems that don't share keys: quarterly 
 Every output row is traceable to specific filing IDs and source URLs. This is a records product: it reports what the filings say, in a form you can archive, query, and verify. It does not score, rank, or interpret.
 
 > **An overlap is not a finding of wrongdoing.** Members of Congress trade securities and industries lobby Congress; both are legal, disclosed, and continuous. Co-occurrence within a quarter is a factual observation about two public datasets, nothing more. This actor makes no claim of causation and emits no trade recommendations.
+
+> **Match level: sector, not issuer.** The join is on *sector*: a trade's ticker is mapped to a sector, a lobbying filing's issue codes are mapped to sectors, and the two are matched on (quarter, sector). The lobbying filings in a record are **not** about the company whose stock was traded — e.g. a META/AAPL/GOOG trade matches lobbying by a lender, a veterans-claims startup and a university, because they all carry technology-related issue codes (TEC/SCI). Every record carries `match_level: "sector"` to say so. This actor does not do issuer-level matching.
 
 Part of a set:
 - **[House Trading Pipeline](https://apify.com/seralifatih/congress-trading-pipeline-1)** — House Clerk PTRs, feeds this actor's House trades.
@@ -31,14 +35,20 @@ One record per **(member, quarter, sector)** overlap — not one per trade, not 
   "sector": "defense",
   "mapping_rule_id": "tk:LMT->defense",
   "mapping_confidence": "high",
+  "match_level": "sector",
   "overlap_type": "committee_match",
+  "is_primary_mapping": true,
   "disclosure_lag_days": 30,
   "trades": [
     {
-      "ptr_filing_id": "4d6016b4...",
-      "ptr_url": "https://disclosures-clerk.house.gov/...",
+      "ptr_filing_id": "20035143",
+      "tracker_row_id": "4d6016b4...",
+      "ptr_url": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/20035143.pdf",
+      "ptr_url_kind": "document",
+      "member_resolution": "bioguide_id",
+      "is_primary_mapping": true,
       "ticker": "LMT",
-      "transaction_type": "purchase",
+      "transaction_type": "buy",
       "amount_range": "$1,001 - $15,000",
       "transaction_date": "2026-01-05",
       "disclosure_date": "2026-02-04",
@@ -52,7 +62,10 @@ One record per **(member, quarter, sector)** overlap — not one per trade, not 
       "registrant": "Example Government Affairs LLC",
       "client": "Example Defense Corp",
       "issue_codes": ["DEF", "BUD"],
+      "filing_type": "Q1",
+      "filing_posted_date": "2026-04-14",
       "amount_reported": 240000.0,
+      "amount_reported_status": "reported",
       "amount_outlier": false
     }
   ],
@@ -80,10 +93,12 @@ One record per **(member, quarter, sector)** overlap — not one per trade, not 
 | `sector` | `string` | Crosswalk sector vocabulary, e.g. `defense`, `healthcare` |
 | `mapping_rule_id` | `string` | Which crosswalk rule fired, e.g. `tk:LMT->defense` — always traceable |
 | `mapping_confidence` | `'high' \| 'medium'` | Confidence of the strongest rule that produced this record. `low`-confidence records are excluded from the dataset entirely — see "Low-confidence mappings are excluded" below |
+| `match_level` | `'sector'` | Always `"sector"` — the join is sector-level, never issuer-level. See "Match level" below |
 | `overlap_type` | `'committee_match' \| 'sector_match_only'` | See below |
+| `is_primary_mapping` | `boolean` | True if at least one trade in the record is at its primary sector mapping — see "Multi-sector tickers" below |
 | `disclosure_lag_days` | `integer \| null` | Days from the earliest trade's transaction date to its disclosure date. `null` when that trade is an amendment — see "Amendments and `disclosure_lag_days`" below |
-| `trades[]` | `array` | Every trade by this member in this sector/quarter, each traceable to a PTR filing. Each item includes `filing_type` (`'original' \| 'amendment' \| null`, same vocabulary as the Senate/House pipelines) |
-| `lobbying[]` | `array` | Lobbying filings for this sector/quarter — sector-wide, not specific to this trade (see "`sector_lobbying_filing_count`, not `lobbying_filing_count`" below), capped to the largest by reported amount. Each item includes `amount_outlier` |
+| `trades[]` | `array` | Every trade by this member in this sector/quarter, each traceable to a PTR filing (`ptr_filing_id`, `ptr_url`, `ptr_url_kind`, `tracker_row_id`). `transaction_type` is `buy \| sell \| exchange`, same as the trackers. Each item includes `filing_type` (`'original' \| 'amendment' \| null`, same vocabulary as the Senate/House pipelines) |
+| `lobbying[]` | `array` | Lobbying filings for this sector/quarter — sector-wide, not specific to this trade (see "`sector_lobbying_filing_count`, not `lobbying_filing_count`" below), capped to the largest by reported amount. Each item includes `filing_type`, `filing_posted_date`, `amount_reported`, `amount_reported_status` and `amount_outlier` |
 | `sector_lobbying_filing_count` | `integer` | Uncapped total matching filings — if greater than `lobbying.length`, the list was truncated |
 | `committees[]` | `array` | Committee assignments that produced a `committee_match`; empty for `sector_match_only` |
 
@@ -93,6 +108,37 @@ One record per **(member, quarter, sector)** overlap — not one per trade, not 
 - **`sector_match_only`** — the sector overlap exists, but no committee link does.
 
 LDA filings disclose which chamber or agency was lobbied, not which committee — so committee matching is resolved through sector jurisdiction, and the record shows exactly which committee and which jurisdiction tag produced the match.
+
+### Match level: `sector`, never issuer
+
+Every record has `match_level: "sector"`. Trades and lobbying filings are matched only on (quarter, sector) through the crosswalk (ticker → sector, LDA issue code → sector). A lobbying filing in `lobbying[]` is lobbying *in the same sector*, not lobbying *by or about the company traded*. There is no issuer-level matching in this actor; do not read a record as "this company lobbied on X".
+
+### Traceability fields on `trades[]`
+
+| Field | Meaning |
+|---|---|
+| `ptr_filing_id` | The filing's own id from the tracker (`filing_id`: House DocID, Senate filing UUID). Shared by every trade in that filing. |
+| `tracker_row_id` | The tracker dataset row's `id` (sha256 hash, one per transaction row) — join key back to the tracker dataset. |
+| `ptr_url` | House: the filing's own PDF (the tracker's `pdf_url`). Senate: see below. |
+| `ptr_url_kind` | `"document"` — `ptr_url` is the filing itself; `"portal_fallback"` — a generic disclosure search page (no per-filing URL was available). |
+| `member_resolution` | `"bioguide_id"` — attributed via the tracker's `member_bioguide_id` (preferred); `"name"` — display-name fallback because the row had no usable id. Counts of each are in `RUN_SUMMARY.member_resolution`, and every name-fallback attribution is logged. |
+| `is_primary_mapping` | See "Multi-sector tickers" below. |
+
+**Senate links.** The Senate tracker currently emits `pdf_url: null` on every parsed row (only placeholder rows carry one), so Senate trades have `ptr_url_kind: "portal_fallback"`. The Senate source does identify each filing by UUID — carried as `ptr_filing_id` — and its listing links detail pages as `/search/view/ptr/<uuid>/`, but efdsearch.senate.gov is session-gated and that path could not be confirmed to resolve for a bare client, so this actor does not construct a URL from it. When the Senate tracker emits a real `pdf_url`, it is passed through automatically.
+
+### Multi-sector tickers and `is_primary_mapping`
+
+Some tickers map to more than one sector (HD → retail and construction; JNJ → healthcare and pharma), so one trade appears in several records. Nothing is removed. Instead, each appearance of a trade carries `trades[].is_primary_mapping`, and the record carries `is_primary_mapping` (true if any of its trades is primary there). A trade's primary sector is the one with the strongest crosswalk rule — confidence `high` > `medium` > `low`, ties broken by lexicographic `rule_id` — so it is deterministic. Each trade is primary in exactly one record. To count each trade once, count only `is_primary_mapping: true` trades (or records).
+
+### Lobbying amounts: `amount_reported` and `amount_reported_status`
+
+`amount_reported` is the LDA filing's `income` (lobbying firms) or, if absent, `expenses` (self-filers). It is often null **in the source**, and `lobbying[].amount_reported_status` says why:
+
+- `reported` — a value is present.
+- `not_applicable_registration` — an LD-1 registration (`filing_type` `RR`/`RA`). Registrations have no income/expenses fields at all.
+- `not_reported` — a report-type filing whose income and expenses are both null at the source.
+
+(Checked against lda.gov: `Q2` reports populate income/expenses; `RR` registrations never do. Early result pages for a quarter are mostly registrations, which is why a run with a low `lda_max_pages` can show almost nothing but nulls.) Each lobbying item also carries `filing_type` and `filing_posted_date`. When `max_filings_per_record` truncates the list, filings are kept by largest `amount_reported` first; filings with no amount are then ordered by `filing_posted_date` (newest first) and `lda_filing_uuid`, so the cap is deterministic even when every amount is null.
 
 ### Amendments and `disclosure_lag_days`
 
@@ -116,6 +162,19 @@ A small number of LDA filings report implausibly large `amount_reported` values 
 
 ---
 
+## Tracker input requirements
+
+Trades come from the most recent **suitable** successful run of the House and Senate tracker actors. A run is skipped if it is truncated, was filtered (members / tickers / transaction dates), was debug-limited, lacks a `RUN_SUMMARY`, or its filing-date window doesn't cover the requested quarters. If no recent run qualifies, this actor **fails** rather than report overlaps from partial data. Keep an unfiltered tracker run covering the quarter(s) you request (the filing window should extend ~45 days past quarter end to include late filings). The run actually used is recorded in `RUN_SUMMARY.tracker_runs`.
+
+**When the 15-run walkback finds nothing.** Now that the trackers accept `members`, `tickers` and transaction-date filters, filtered runs are common, and the 15 most recent successful runs can legitimately all be filtered, truncated, debug-limited or too narrow — in which case this actor fails with a message listing each skipped run and why. To fix it:
+
+1. Run the House and Senate trackers **unfiltered** (leave `members`, `tickers`, `transactionDateFrom/To` and `debugPtrLimit` empty) with a filing-date window that covers the quarter plus ~45 days after it (e.g. `fromDate: 2026-04-01`, `toDate: 2026-08-15` for 2026-Q2), and a maximum charge high enough that the run is not truncated (check `RUN_SUMMARY.truncated` is `false`).
+2. Re-run this actor. Do not run further filtered tracker runs in between — they will be skipped, but enough of them will push the unfiltered run out of the 15-run window.
+
+Tracker runs are read from the Apify account that runs this actor.
+
+---
+
 ## How it works
 
 ```
@@ -136,7 +195,7 @@ A small number of LDA filings report implausibly large `amount_reported` values 
 
 **4. Join (pure).** Trades and lobbying filings are grouped by `(member, quarter, sector)`. A record is emitted only when a member traded in a sector that had at least one lobbying filing that same quarter, and only when the group's strongest crosswalk rule is `high` or `medium` confidence — `low`-confidence groups are excluded (see "Low-confidence mappings are excluded" above). Committee assignments are checked against the sector to decide `committee_match` vs `sector_match_only`. `disclosure_lag_days` is computed from the earliest trade in the group, and nulled if that trade is an amendment (see "Amendments and `disclosure_lag_days`" above).
 
-**5. Output.** Records land in the default Apify dataset. Every run — including zero-overlap runs — also writes a `RUN_SUMMARY` to the key-value store: quarters covered, members scanned, overlap counts by type, low-confidence records excluded, LDA amount outliers flagged, and every unmapped issue code / ticker / committee / member name, so nothing is silently dropped.
+**5. Output.** Records land in the default Apify dataset. Every run — including zero-overlap runs — also writes a `RUN_SUMMARY` to the key-value store: quarters covered, members scanned, overlap counts by type, low-confidence records excluded, LDA amount outliers flagged, which tracker run was consumed per chamber (`tracker_runs`), how trades were attributed to members (`member_resolution`), per-chamber tracker intake (`ptr_sources`) and skip reasons, and every unmapped issue code / ticker / committee / member name, so nothing is silently dropped.
 
 All HTTP calls retry with exponential backoff; the LDA fetcher additionally paces requests against LDA's shared rate limit and honors `Retry-After`.
 
@@ -158,7 +217,7 @@ Every mapping row carries a `confidence` grade (`high` / `medium` / `low`), and 
 | Variable | Required | Description |
 |---|---|---|
 | `LDA_API_KEY` | No | Senate LDA API key. Falls back to the `lda_api_key` actor input, then anonymous access (heavily rate-limited). Register a free key at [lda.gov](https://lda.gov) for reliable multi-quarter runs. Never logged — only whether a key was used. |
-| `APIFY_TOKEN` | Yes (standalone only) | Needed to read the House/Senate trading pipeline actors' datasets via the Apify API when running outside the Apify platform. Not required when running as an actor on Apify — the platform provides dataset access natively. |
+| `APIFY_TOKEN` | Yes | Used to list and read the House/Senate trading pipeline actors' runs and datasets via the Apify API. On the Apify platform it is set automatically to the token of the account running this actor, so the tracker runs must exist in that account. |
 
 Copy `.env.example` locally if you add one for your own runs; none is checked in because both variables are optional or platform-provided. Never commit real key values.
 

@@ -70,36 +70,37 @@ class TestHouseRow:
     def test_maps(self) -> None:
         mapped = map_row(HOUSE_ROW)
         assert not isinstance(mapped, SkippedRow)
-        name, trade = mapped
+        name, _bg, trade = mapped
         assert name == "Mark Alford"
-        assert trade.ptr_filing_id == HOUSE_ROW["id"]
+        assert trade.tracker_row_id == HOUSE_ROW["id"]
+        assert trade.ptr_filing_id == HOUSE_ROW["id"]  # no filing_id on row
         assert trade.ticker == "AMZN"
-        assert trade.transaction_type is TransactionType.sale  # sell -> sale
+        assert trade.transaction_type is TransactionType.sell
         assert trade.amount_range == "$1,001 - $15,000"
         assert trade.transaction_date == date(2026, 3, 16)
         assert trade.disclosure_date == date(2026, 3, 31)
 
     def test_fallback_ptr_url(self) -> None:
-        _, trade = map_row(HOUSE_ROW)  # type: ignore[misc]
+        _, _, trade = map_row(HOUSE_ROW)  # type: ignore[misc]
         assert trade.ptr_url == FALLBACK_PTR_URL["house"]
 
     def test_explicit_ptr_url_wins(self) -> None:
         row = {**HOUSE_ROW, "ptr_url": "https://clerk.example/filing/123"}
-        _, trade = map_row(row)  # type: ignore[misc]
+        _, _, trade = map_row(row)  # type: ignore[misc]
         assert trade.ptr_url == "https://clerk.example/filing/123"
 
     def test_filing_type_absent_is_null(self) -> None:
-        _, trade = map_row(HOUSE_ROW)  # type: ignore[misc]
+        _, _, trade = map_row(HOUSE_ROW)  # type: ignore[misc]
         assert trade.filing_type is None
 
     def test_filing_type_passed_through(self) -> None:
         row = {**HOUSE_ROW, "filing_type": "amendment"}
-        _, trade = map_row(row)  # type: ignore[misc]
+        _, _, trade = map_row(row)  # type: ignore[misc]
         assert trade.filing_type is FilingType.amendment
 
     def test_filing_type_unrecognized_is_null(self) -> None:
         row = {**HOUSE_ROW, "filing_type": "garbled"}
-        _, trade = map_row(row)  # type: ignore[misc]
+        _, _, trade = map_row(row)  # type: ignore[misc]
         assert trade.filing_type is None
 
 
@@ -110,10 +111,10 @@ class TestSenateRow:
     def test_maps(self) -> None:
         mapped = map_row(SENATE_ROW)
         assert not isinstance(mapped, SkippedRow)
-        name, trade = mapped
+        name, _bg, trade = mapped
         assert name == "Nancy Pelosi"
         assert trade.ticker == "NVDA"
-        assert trade.transaction_type is TransactionType.purchase
+        assert trade.transaction_type is TransactionType.buy
         assert trade.amount_range == "$1,000,001 - $5,000,000"
         assert trade.transaction_date == date(2026, 4, 29)
         assert trade.disclosure_date == date(2026, 4, 29)
