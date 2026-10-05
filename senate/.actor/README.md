@@ -11,6 +11,8 @@ No third-party aggregators. Direct from the Senate eFD system.
 Part of a set:
 - **[House Trading Pipeline](https://apify.com/seralifatih/congress-trading-pipeline-1)** — same target schema, House Clerk PTRs. Run either or both.
 
+📦 **Free 2025 snapshot:** every House & Senate trade from 2025 (8,462 rows, CSV/Parquet) on [Kaggle](https://www.kaggle.com/datasets/fatihlhan/us-congress-stock-trades-2025-house-and-senate) · [Hugging Face](https://huggingface.co/datasets/seralifatih/us-congress-stock-trades-2025)
+
 ## Who uses this
 
 - **Retail traders** tracking which senators are buying/selling before
@@ -367,6 +369,8 @@ because a `tickers` or transaction-date filter was set),
 `skippedByMemberCount`, `skippedByTransactionDateCount`,
 `filteredByTickerCount` and `filteredByTransactionDateCount`. (`duplicatesRemoved`
 and `placeholdersExcludedCount` are the same two numbers under their earlier names.)
+
+> **Large date ranges:** if your run's maximum charge is lower than the cost of the window, the oldest filings are cut off (the run is marked TRUNCATED and RUN_SUMMARY shows `rowsNotEmitted`). Raise the max charge per run, or split the window into quarters with `fromDate` / `toDate`.
 
 ---
 

@@ -13,6 +13,8 @@ No third-party aggregators. Direct from the Clerk of the House.
 Part of a set:
 - **[Senate Trading Pipeline](https://github.com/seralifatih/senate-trading-pipeline)** — same target schema, separate fetcher + PDF parser. Run either or both.
 
+📦 **Free 2025 snapshot:** every House & Senate trade from 2025 (8,462 rows, CSV/Parquet) on [Kaggle](https://www.kaggle.com/datasets/fatihlhan/us-congress-stock-trades-2025-house-and-senate) · [Hugging Face](https://huggingface.co/datasets/seralifatih/us-congress-stock-trades-2025)
+
 ## Who uses this
 
 - **Retail traders** tracking which Congress members are buying/selling
@@ -376,6 +378,8 @@ transaction-date filter was set), `skippedByMemberCount`,
 `skippedByTransactionDateCount`, `filteredByTickerCount` and
 `filteredByTransactionDateCount`. (`duplicatesRemoved` and
 `placeholdersExcludedCount` are the same two numbers under their earlier names.)
+
+> **Large date ranges:** a full year of House filings is ~7,500 rows. If your run's maximum charge is lower than the cost of the window, the oldest filings are cut off (the run is marked TRUNCATED and RUN_SUMMARY shows `rowsNotEmitted`). Raise the max charge per run, or split the window into quarters with `fromDate` / `toDate`.
 
 ### Known limitations
 
