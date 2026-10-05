@@ -7,6 +7,8 @@ Part of a set:
 
 ---
 
+📦 **Free 2025 snapshot:** every House & Senate trade from 2025 (8,462 rows, CSV/Parquet) on [Kaggle](https://www.kaggle.com/datasets/fatihlhan/us-congress-stock-trades-2025-house-and-senate) · [Hugging Face](https://huggingface.co/datasets/seralifatih/us-congress-stock-trades-2025)
+
 ## What it produces
 
 One row per individual transaction reported in a Senate PTR:

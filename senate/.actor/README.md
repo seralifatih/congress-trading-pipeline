@@ -370,7 +370,7 @@ because a `tickers` or transaction-date filter was set),
 `filteredByTickerCount` and `filteredByTransactionDateCount`. (`duplicatesRemoved`
 and `placeholdersExcludedCount` are the same two numbers under their earlier names.)
 
-> **Large date ranges:** if your run's maximum charge is lower than the cost of the window, the oldest filings are cut off (the run is marked TRUNCATED and RUN_SUMMARY shows `rowsNotEmitted`). Raise the max charge per run, or split the window into quarters with `fromDate` / `toDate`.
+> **Large date ranges:** a full year of Senate filings is ~1,200 rows. If your run's maximum charge is lower than the cost of the window, the oldest filings are cut off (the run is marked TRUNCATED and RUN_SUMMARY shows `rowsNotEmitted`). Raise the max charge per run, or split the window into quarters with `fromDate` / `toDate`.
 
 ---
 

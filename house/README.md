@@ -10,6 +10,8 @@ No third-party aggregators. Direct from the Clerk of the House.
 Part of a set:
 - **[Senate Trading Pipeline](https://github.com/seralifatih/senate-trading-pipeline)** — same target schema, separate fetcher + PDF parser. Run either or both.
 
+📦 **Free 2025 snapshot:** every House & Senate trade from 2025 (8,462 rows, CSV/Parquet) on [Kaggle](https://www.kaggle.com/datasets/fatihlhan/us-congress-stock-trades-2025-house-and-senate) · [Hugging Face](https://huggingface.co/datasets/seralifatih/us-congress-stock-trades-2025)
+
 ## Who uses this
 
 - **Retail traders** tracking which Congress members are buying/selling

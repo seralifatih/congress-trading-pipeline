@@ -1,6 +1,3 @@
-| `row_index_in_filing` | `integer | null` | 0-based position of the row among its filing's parsed rows, in source order — tells apart repeated line items inside one filing (they share a `content_hash`). Not part of `id` or `content_hash`; `0` on a placeholder |
-| `supersedes_filing_id` | `string | null` | On an amended filing's rows: the earlier filing by the same filer that it re-lists trades from. `null` when not determinable |
-| `is_superseded` | `boolean` | `true` on the surviving rows of a filing that a later amended filing supersedes |
 # U.S. House Trading Pipeline
 
 Nancy Pelosi files a $500k–$1M purchase of Nvidia options.
@@ -80,6 +77,9 @@ One row per individual transaction reported in a House PTR:
 | `source_id` | `string` | Source PTR's DocID + row ordinal (`house_<DocID>_<row_index>`), or `house_<DocID>_fetch_failed` / `house_<DocID>_scanned` / `house_<DocID>_parse_failed` for the three placeholder kinds |
 | `content_hash` | `string` | SHA-256 of `politician\|date\|asset\|type\|amount_min\|amount_max\|owner` (source_id excluded) — see "Duplicate transactions across filings" below |
 | `filing_type` | `'original' \| 'amendment' \| null` | Read from the PTR's own per-row "Filing Status: New/Amended" line. `null` when that line is missing — never guessed. No amendment-number equivalent exists in this source |
+| `row_index_in_filing` | `integer | null` | 0-based position of the row among its filing's parsed rows, in source order — tells apart repeated line items inside one filing (they share a `content_hash`). Not part of `id` or `content_hash`; `0` on a placeholder |
+| `supersedes_filing_id` | `string | null` | On an amended filing's rows: the earlier filing by the same filer that it re-lists trades from. `null` when not determinable |
+| `is_superseded` | `boolean` | `true` on the surviving rows of a filing that a later amended filing supersedes |
 | `parse_status` | `'ok' \| 'fetch_failed' \| 'scanned_unparsed' \| 'parse_failed'` | `'ok'` for a normally-parsed row. `'fetch_failed'` means the PDF download itself failed after retries — transient, superseded automatically once a later run succeeds. `'scanned_unparsed'` means this filing's PDF has no extractable text layer (scanned/paper PTR, no OCR fallback). `'parse_failed'` means the PDF has a text layer but no row matched the expected shape — see "Coverage" below |
 | `pdf_url` | `string` | The source House PTR PDF this row was parsed from (or, for a placeholder row, the PDF that couldn't be fetched/read) |
 | `fetchedAt` | `string` (ISO 8601 UTC) | When this row was first pulled from source. Immutable — never updated by a later re-fetch of the same, unchanged row |
